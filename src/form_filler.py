@@ -51,6 +51,7 @@ async def fill_personal_details(page: Page, logger: Logger) -> None:
             if value.lower() in {"1", "true", "yes", "ja"}:
                 await field.check()
         else:
+            value = await _value_for_field(field, field_info.env_name, value)
             await field.fill(value)
         logger.info("Filled field '%s' from %s", field_info.label, field_info.env_name)
 
@@ -194,3 +195,37 @@ def _select_value_candidates(value: str) -> list[str]:
     if normalized in {"female", "f", "frau", "weiblich"}:
         return [value, "female", "weiblich", "f", "Frau"]
     return [value]
+
+
+async def _value_for_field(field, env_name: str | None, value: str) -> str:
+    if env_name != "APPLICANT_DATE_OF_BIRTH":
+        return value
+
+    field_type = (await field.get_attribute("type") or "").lower()
+    placeholder = (await field.get_attribute("placeholder") or "").lower()
+    pattern = (await field.get_attribute("pattern") or "").lower()
+    parsed = _parse_date(value)
+    if not parsed:
+        return value
+
+    day, month, year = parsed
+    if field_type == "date":
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    if "." in placeholder or "tt" in placeholder or "dd.mm" in pattern:
+        return f"{day:02d}.{month:02d}.{year:04d}"
+    if "/" in placeholder:
+        return f"{day:02d}/{month:02d}/{year:04d}"
+    return f"{day:02d}.{month:02d}.{year:04d}"
+
+
+def _parse_date(value: str) -> tuple[int, int, int] | None:
+    text = value.strip()
+    match = re.fullmatch(r"(\d{1,2})[-./](\d{1,2})[-./](\d{4})", text)
+    if match:
+        day, month, year = map(int, match.groups())
+        return day, month, year
+    match = re.fullmatch(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", text)
+    if match:
+        year, month, day = map(int, match.groups())
+        return day, month, year
+    return None

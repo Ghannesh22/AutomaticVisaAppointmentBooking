@@ -237,6 +237,8 @@ The Step 5 form can only be inspected after a slot is selected. When the dry-run
 - `APPLICANT_PASSPORT_NUMBER`
 - `APPLICANT_GENDER` (`male` maps to common German options such as `männlich`, `maennlich`, `m`, or `Herr`)
 
+`APPLICANT_DATE_OF_BIRTH` can be entered as `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`; the script formats it for the detected website field.
+
 Before filling anything, the script validates all detected required fields. It stops with a clear error if a required mapped `.env` value is empty or if the website exposes a required field that is not mapped yet.
 
 ## Dry-Run Testing Process
