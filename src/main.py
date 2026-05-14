@@ -38,4 +38,8 @@ async def async_main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(async_main()))
+    try:
+        sys.exit(asyncio.run(async_main()))
+    except KeyboardInterrupt:
+        setup_logger().info("Ctrl+C received; shutdown completed")
+        sys.exit(130)

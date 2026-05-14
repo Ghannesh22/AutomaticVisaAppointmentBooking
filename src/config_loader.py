@@ -23,6 +23,8 @@ class AppConfig:
     headless: bool
     dry_run: bool
     browser_timeout_seconds: int
+    heartbeat_enabled: bool
+    heartbeat_interval_minutes: int
 
     @property
     def target_year(self) -> int:
@@ -45,9 +47,11 @@ def load_config(path: Path | None = None) -> AppConfig:
         target_month=str(raw["target_month"]).strip(),
         check_interval_seconds=int(raw.get("check_interval_seconds", 300)),
         max_runtime_minutes=int(raw.get("max_runtime_minutes", 720)),
-        headless=bool(raw.get("headless", False)),
-        dry_run=bool(raw.get("dry_run", True)),
+        headless=_as_bool(raw.get("headless", False)),
+        dry_run=_as_bool(raw.get("dry_run", True)),
         browser_timeout_seconds=int(raw.get("browser_timeout_seconds", 30)),
+        heartbeat_enabled=_as_bool(raw.get("heartbeat_enabled", False)),
+        heartbeat_interval_minutes=int(raw.get("heartbeat_interval_minutes", 240)),
     )
     _validate_config(config)
     return config
@@ -73,3 +77,13 @@ def _validate_config(config: AppConfig) -> None:
         raise ValueError("max_runtime_minutes must be at least 1")
     if config.browser_timeout_seconds < 5:
         raise ValueError("browser_timeout_seconds must be at least 5")
+    if config.heartbeat_interval_minutes < 15:
+        raise ValueError("heartbeat_interval_minutes must be at least 15")
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)

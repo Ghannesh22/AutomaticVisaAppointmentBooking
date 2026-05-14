@@ -16,6 +16,7 @@ The project starts in visible browser mode with `dry_run: true`. Dry-run mode na
 - The script stops after a successful booking submission.
 - After a successful real booking submission, the script creates `confirmations/booking_success.flag`.
 - If that flag exists, future runs stop before monitoring or submitting anything.
+- Runtime logs are written to `logs/monitor.log`.
 - `.env`, logs, screenshots, traces, videos, and confirmation files are ignored by Git.
 - Screenshots are saved only on errors or successful real booking.
 
@@ -40,6 +41,8 @@ check_interval_seconds: 300
 max_runtime_minutes: 720
 headless: false
 dry_run: true
+heartbeat_enabled: false
+heartbeat_interval_minutes: 240
 ```
 
 Keep `headless: false` while validating the flow. After dry-run validation, set:
@@ -76,6 +79,26 @@ The script performs this German website flow:
 
 If the session expires or the navigation no longer matches the expected flow, the script logs the error, saves an error screenshot, and restarts from Step 1.
 Repeated navigation failures use temporary exponential backoff before restarting the flow. The backoff resets after the calendar page loads successfully.
+
+During dry-run monitoring, slot-state logs distinguish:
+
+- no slots available
+- calendar loaded but empty
+- slot detected outside July 2026
+- valid July 2026 slot detected
+
+Each slot-state log includes a timestamp and a short visible German page-text snippet without applicant details.
+
+## Heartbeat Email
+
+Heartbeat emails are disabled by default. To enable a lightweight status email every four hours:
+
+```yaml
+heartbeat_enabled: true
+heartbeat_interval_minutes: 240
+```
+
+The heartbeat includes monitoring-active status, last successful calendar check time, current retry/backoff interval, and dry-run status. The timer resets only after a successful heartbeat email.
 
 ## Duplicate Booking Protection
 

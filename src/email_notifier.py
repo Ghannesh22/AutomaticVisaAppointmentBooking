@@ -81,3 +81,44 @@ def send_booking_email(
             smtp.starttls()
         smtp.login(settings.sender, settings.app_password)
         smtp.send_message(message)
+
+
+def send_heartbeat_email(
+    last_calendar_check: str,
+    current_retry_interval_seconds: int,
+    dry_run: bool,
+) -> None:
+    settings = load_email_settings()
+    missing = [
+        key
+        for key, value in {
+            "EMAIL_SENDER": settings.sender,
+            "EMAIL_APP_PASSWORD": settings.app_password,
+            "EMAIL_RECEIVER": settings.receiver,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise ValueError(f"Missing email settings in .env: {', '.join(missing)}")
+
+    message = EmailMessage()
+    message["Subject"] = "Visa appointment monitor heartbeat"
+    message["From"] = settings.sender
+    message["To"] = settings.receiver
+    message.set_content(
+        "\n".join(
+            [
+                "Monitoring active.",
+                "",
+                f"Last successful calendar check: {last_calendar_check}",
+                f"Current retry interval/backoff: {current_retry_interval_seconds} seconds",
+                f"Dry-run: {dry_run}",
+            ]
+        )
+    )
+
+    with smtplib.SMTP(settings.host, settings.port, timeout=30) as smtp:
+        if settings.use_tls:
+            smtp.starttls()
+        smtp.login(settings.sender, settings.app_password)
+        smtp.send_message(message)
