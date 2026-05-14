@@ -2,65 +2,80 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from logging import Logger
 
 from playwright.async_api import Page
 
 
-KNOWN_FIELD_VALUES = {
-    "vorname": "APPLICANT_FIRST_NAME",
-    "name": "APPLICANT_LAST_NAME",
-    "nachname": "APPLICANT_LAST_NAME",
-    "familienname": "APPLICANT_LAST_NAME",
-    "e-mail": "APPLICANT_EMAIL",
-    "email": "APPLICANT_EMAIL",
-    "telefon": "APPLICANT_PHONE",
-    "geburtsdatum": "APPLICANT_DATE_OF_BIRTH",
-    "geburt": "APPLICANT_DATE_OF_BIRTH",
-    "staatsangehörigkeit": "APPLICANT_NATIONALITY",
-    "nationalität": "APPLICANT_NATIONALITY",
-    "pass": "APPLICANT_PASSPORT_NUMBER",
-    "reisepass": "APPLICANT_PASSPORT_NUMBER",
-}
+FIELD_MAPPINGS = [
+    (("vorname",), "APPLICANT_FIRST_NAME"),
+    (("nachname", "familienname"), "APPLICANT_LAST_NAME"),
+    (("e-mail", "email"), "APPLICANT_EMAIL"),
+    (("telefon", "mobil"), "APPLICANT_PHONE"),
+    (("geburtsdatum", "geburt"), "APPLICANT_DATE_OF_BIRTH"),
+    (("staatsangehoerigkeit", "staatsangehörigkeit", "nationalitaet", "nationalität"), "APPLICANT_NATIONALITY"),
+    (("reisepass", "passnummer", "pass"), "APPLICANT_PASSPORT_NUMBER"),
+]
+
+
+@dataclass
+class FormField:
+    index: int
+    label: str
+    env_name: str | None
+    required: bool
 
 
 async def fill_personal_details(page: Page, logger: Logger) -> None:
-    logger.info("Filling personal details from .env where labels can be matched")
+    logger.info("Detecting Step 5 personal detail fields")
     inputs = page.locator("input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select")
-    count = await inputs.count()
-    missing_required: list[str] = []
+    fields = await _detect_fields(inputs, logger)
+    _validate_required_values(fields)
 
+    logger.info("Filling Step 5 personal details from .env")
+    for field_info in fields:
+        if not field_info.env_name:
+            continue
+        value = os.getenv(field_info.env_name, "").strip()
+        if not value:
+            continue
+
+        field = inputs.nth(field_info.index)
+        tag = await field.evaluate("el => el.tagName.toLowerCase()")
+        field_type = (await field.get_attribute("type") or "").lower()
+        if tag == "select":
+            try:
+                await field.select_option(label=value)
+            except Exception:
+                await field.select_option(value=value)
+        elif field_type in {"checkbox", "radio"}:
+            if value.lower() in {"1", "true", "yes", "ja"}:
+                await field.check()
+        else:
+            await field.fill(value)
+        logger.info("Filled field '%s' from %s", field_info.label, field_info.env_name)
+
+
+async def _detect_fields(inputs, logger: Logger) -> list[FormField]:
+    fields: list[FormField] = []
+    count = await inputs.count()
     for index in range(count):
         field = inputs.nth(index)
         if not await field.is_visible():
             continue
         label = await _label_for_field(field)
-        env_name = _env_for_label(label)
-        value = os.getenv(env_name, "") if env_name else ""
-
-        if value:
-            tag = await field.evaluate("el => el.tagName.toLowerCase()")
-            field_type = await field.get_attribute("type") or ""
-            if tag == "select":
-                try:
-                    await field.select_option(label=value)
-                except Exception:
-                    await field.select_option(value=value)
-            elif field_type.lower() in {"checkbox", "radio"}:
-                if value.lower() in {"1", "true", "yes", "ja"}:
-                    await field.check()
-            else:
-                await field.fill(value)
-            logger.info("Filled field '%s' from %s", label or f"#{index + 1}", env_name)
-        elif await _is_required(field):
-            missing_required.append(label or f"field #{index + 1}")
-
-    if missing_required:
-        joined = ", ".join(missing_required)
-        raise ValueError(
-            "Missing required applicant values in .env or unsupported field labels: "
-            f"{joined}. Add matching APPLICANT_* values after inspecting the dry-run form."
+        fields.append(
+            FormField(
+                index=index,
+                label=label or f"field #{index + 1}",
+                env_name=_env_for_label(label),
+                required=await _is_required(field),
+            )
         )
+
+    _log_detected_fields(fields, logger)
+    return fields
 
 
 async def _label_for_field(field) -> str:
@@ -82,9 +97,9 @@ async def _label_for_field(field) -> str:
 
 
 def _env_for_label(label: str) -> str | None:
-    normalized = re.sub(r"\s+", " ", label.lower())
-    for needle, env_name in KNOWN_FIELD_VALUES.items():
-        if needle in normalized:
+    normalized = _normalize_label(label)
+    for needles, env_name in FIELD_MAPPINGS:
+        if any(needle in normalized for needle in needles):
             return env_name
     return None
 
@@ -104,3 +119,54 @@ async def _is_required(field) -> bool:
         }"""
     )
     return required is not None or aria_required == "true" or "*" in label_text
+
+
+def _validate_required_values(fields: list[FormField]) -> None:
+    missing: list[str] = []
+    unmapped: list[str] = []
+    for field in fields:
+        if not field.required:
+            continue
+        if not field.env_name:
+            unmapped.append(field.label)
+            continue
+        if not os.getenv(field.env_name, "").strip():
+            missing.append(f"{field.label} -> {field.env_name}")
+
+    errors = []
+    if missing:
+        errors.append("missing required .env values: " + "; ".join(missing))
+    if unmapped:
+        errors.append("required website fields are not mapped yet: " + "; ".join(unmapped))
+    if errors:
+        raise ValueError("Step 5 applicant field validation failed: " + " | ".join(errors))
+
+
+def _log_detected_fields(fields: list[FormField], logger: Logger) -> None:
+    if not fields:
+        logger.warning("No visible Step 5 personal detail fields detected")
+        return
+    safe_parts = []
+    for field in fields:
+        safe_parts.append(
+            "%s%s -> %s"
+            % (
+                field.label,
+                " (required)" if field.required else "",
+                field.env_name or "UNMAPPED",
+            )
+        )
+    logger.info("step5_fields_detected | %s", " | ".join(safe_parts))
+
+
+def _normalize_label(label: str) -> str:
+    normalized = label.lower()
+    replacements = {
+        "ä": "ae",
+        "ö": "oe",
+        "ü": "ue",
+        "ß": "ss",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+    return re.sub(r"\s+", " ", normalized)

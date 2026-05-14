@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -25,5 +26,7 @@ async def browser_page(config: AppConfig) -> AsyncIterator[Page]:
         try:
             yield page
         finally:
-            await context.close()
-            await browser.close()
+            try:
+                await asyncio.wait_for(context.close(), timeout=10)
+            finally:
+                await asyncio.wait_for(browser.close(), timeout=10)

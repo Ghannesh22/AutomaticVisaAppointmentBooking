@@ -23,12 +23,14 @@ The project starts in visible browser mode with `dry_run: true`. Dry-run mode na
 ## Setup On Windows
 
 ```powershell
-py -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-playwright install chromium
+python -m pip install -r requirements.txt
+python -m playwright install chromium
 Copy-Item .env.example .env
 ```
+
+If your Windows machine uses the Python launcher, `py` can be used instead of `python`.
 
 Edit `.env` with applicant details and Gmail SMTP values. For Gmail, use an app password, not your normal account password.
 
@@ -59,6 +61,8 @@ Only use real booking mode after confirming the dry-run reaches the final overvi
 .\.venv\Scripts\Activate.ps1
 python -m src.main
 ```
+
+Stop monitoring with `Ctrl+C`. The browser is closed by Playwright cleanup and a final monitoring summary is written to `logs/monitor.log`.
 
 ## Booking Flow
 
@@ -122,9 +126,31 @@ After a real booking submission, the script sends an email with:
 
 Important: the official website may send a separate confirmation email with a link. The appointment may not be finalized until that official link is clicked.
 
+## Gmail SMTP Test
+
+Create a Gmail app password at <https://myaccount.google.com/apppasswords>, then set these `.env` values:
+
+```dotenv
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+EMAIL_SENDER=your-gmail-address@gmail.com
+EMAIL_APP_PASSWORD=your-16-character-app-password
+EMAIL_RECEIVER=where-to-send-notifications@example.com
+```
+
+Send a test email:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m src.smtp_test
+```
+
+The command exits with a clear error if required SMTP values are missing or the Gmail app password is invalid.
+
 ## Applicant Fields
 
-The current `.env.example` includes common applicant variables:
+The Step 5 form can only be inspected after a slot is selected. When the dry-run reaches Step 5, the script logs detected visible form labels to `logs/monitor.log` as `step5_fields_detected` and maps known labels to these `.env` variables:
 
 - `APPLICANT_FIRST_NAME`
 - `APPLICANT_LAST_NAME`
@@ -134,4 +160,22 @@ The current `.env.example` includes common applicant variables:
 - `APPLICANT_NATIONALITY`
 - `APPLICANT_PASSPORT_NUMBER`
 
-If the live form uses additional required fields, dry-run mode will log the missing labels so `.env.example` and `src/form_filler.py` can be extended safely.
+Before filling anything, the script validates all detected required fields. It stops with a clear error if a required mapped `.env` value is empty or if the website exposes a required field that is not mapped yet.
+
+## Dry-Run Testing Process
+
+1. Keep `dry_run: true` and `headless: false` in `config.yaml`.
+2. Fill `.env` with applicant details and Gmail SMTP settings.
+3. Run `python -m src.smtp_test` and confirm the test email arrives.
+4. Run `python -m src.main`.
+5. Confirm the visible browser reaches the calendar page and logs one of the slot states in `logs/monitor.log`.
+6. If a July 2026 slot appears, dry-run mode selects it, fills Step 5, advances to the final overview page, and stops before final submission.
+7. Review `step5_fields_detected` in `logs/monitor.log` if the site reports missing or unmapped applicant fields.
+
+Only after dry-run reaches the final overview page safely, switch to:
+
+```yaml
+dry_run: false
+```
+
+Then run `python -m src.main` to start real monitoring.

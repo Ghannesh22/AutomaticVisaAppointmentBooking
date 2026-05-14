@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 
 from src.browser import browser_page
@@ -38,6 +39,13 @@ async def async_main() -> int:
 
 
 if __name__ == "__main__":
+    def _raise_keyboard_interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _raise_keyboard_interrupt)
+
     try:
         sys.exit(asyncio.run(async_main()))
     except KeyboardInterrupt:
