@@ -1,0 +1,9 @@
+website_url: "https://termine.staedteregion-aachen.de/auslaenderamt/"
+visa_category: "RWTH Studenten"
+appointment_location: "RWTH - Außenstelle Super C"
+target_month: "2026-07"
+check_interval_seconds: 300
+max_runtime_minutes: 720
+headless: false
+dry_run: true
+browser_timeout_seconds: 30
