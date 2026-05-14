@@ -33,6 +33,7 @@ Copy-Item .env.example .env
 If your Windows machine uses the Python launcher, `py` can be used instead of `python`.
 
 Edit `.env` with applicant details and Gmail SMTP values. For Gmail, use an app password, not your normal account password.
+Leave the SMTP settings empty to disable project email notifications; the official appointment email will still go to `APPLICANT_EMAIL`.
 
 ## Configuration
 
@@ -147,6 +148,7 @@ python -m src.smtp_test
 ```
 
 The command exits with a clear error if required SMTP values are missing or the Gmail app password is invalid.
+If SMTP settings are empty, SMTP is treated as disabled and the test command exits successfully without sending email.
 
 ## Applicant Fields
 

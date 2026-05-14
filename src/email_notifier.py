@@ -18,14 +18,20 @@ class EmailSettings:
 
 
 def load_email_settings() -> EmailSettings:
+    smtp_port = os.getenv("SMTP_PORT", "").strip()
     return EmailSettings(
-        host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        port=int(os.getenv("SMTP_PORT", "587")),
-        use_tls=os.getenv("SMTP_USE_TLS", "true").lower() == "true",
-        sender=os.getenv("EMAIL_SENDER", ""),
-        app_password=os.getenv("EMAIL_APP_PASSWORD", ""),
-        receiver=os.getenv("EMAIL_RECEIVER", ""),
+        host=os.getenv("SMTP_HOST", "").strip(),
+        port=int(smtp_port) if smtp_port else 587,
+        use_tls=os.getenv("SMTP_USE_TLS", "true").strip().lower() != "false",
+        sender=os.getenv("EMAIL_SENDER", "").strip(),
+        app_password=os.getenv("EMAIL_APP_PASSWORD", "").strip(),
+        receiver=os.getenv("EMAIL_RECEIVER", "").strip(),
     )
+
+
+def smtp_enabled() -> bool:
+    settings = load_email_settings()
+    return bool(settings.host and settings.sender and settings.app_password and settings.receiver)
 
 
 def send_booking_email(
@@ -36,6 +42,8 @@ def send_booking_email(
     attachment: Path | None = None,
 ) -> None:
     settings = load_email_settings()
+    if not smtp_enabled():
+        return
     missing = [
         key
         for key, value in {
@@ -89,6 +97,8 @@ def send_heartbeat_email(
     dry_run: bool,
 ) -> None:
     settings = load_email_settings()
+    if not smtp_enabled():
+        return
     missing = [
         key
         for key, value in {

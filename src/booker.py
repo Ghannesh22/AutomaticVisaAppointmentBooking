@@ -6,7 +6,7 @@ from pathlib import Path
 from playwright.async_api import Page
 
 from src.config_loader import AppConfig, PROJECT_ROOT
-from src.email_notifier import send_booking_email
+from src.email_notifier import send_booking_email, smtp_enabled
 from src.form_filler import fill_personal_details
 from src.logger import safe_filename
 from src.slot_checker import SlotCandidate
@@ -61,14 +61,17 @@ async def book_slot(page: Page, config: AppConfig, slot: SlotCandidate, logger: 
         reference=reference,
     )
     logger.info("Created booking success flag at %s", flag)
-    send_booking_email(
-        appointment_date=slot.date_text,
-        appointment_time=slot.time_text,
-        location=config.appointment_location,
-        reference=reference,
-        attachment=screenshot,
-    )
-    logger.info("Sent Gmail SMTP booking notification")
+    if smtp_enabled():
+        send_booking_email(
+            appointment_date=slot.date_text,
+            appointment_time=slot.time_text,
+            location=config.appointment_location,
+            reference=reference,
+            attachment=screenshot,
+        )
+        logger.info("Sent Gmail SMTP booking notification")
+    else:
+        logger.info("SMTP settings are empty; skipping email notification")
     return True
 
 

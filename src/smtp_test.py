@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 
 from src.config_loader import PROJECT_ROOT
-from src.email_notifier import load_email_settings
+from src.email_notifier import load_email_settings, smtp_enabled
 from src.logger import setup_logger
 
 
@@ -15,6 +15,9 @@ def main() -> int:
     logger = setup_logger()
     load_dotenv(PROJECT_ROOT / ".env")
     settings = load_email_settings()
+    if not smtp_enabled():
+        logger.info("SMTP is disabled because SMTP settings are empty")
+        return 0
 
     missing = [
         key
