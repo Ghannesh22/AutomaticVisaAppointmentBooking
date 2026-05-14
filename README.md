@@ -159,6 +159,7 @@ The Step 5 form can only be inspected after a slot is selected. When the dry-run
 - `APPLICANT_DATE_OF_BIRTH`
 - `APPLICANT_NATIONALITY`
 - `APPLICANT_PASSPORT_NUMBER`
+- `APPLICANT_GENDER` (`male` maps to common German options such as `männlich`, `maennlich`, `m`, or `Herr`)
 
 Before filling anything, the script validates all detected required fields. It stops with a clear error if a required mapped `.env` value is empty or if the website exposes a required field that is not mapped yet.
 

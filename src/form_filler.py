@@ -16,6 +16,7 @@ FIELD_MAPPINGS = [
     (("geburtsdatum", "geburt"), "APPLICANT_DATE_OF_BIRTH"),
     (("staatsangehoerigkeit", "staatsangehörigkeit", "nationalitaet", "nationalität"), "APPLICANT_NATIONALITY"),
     (("reisepass", "passnummer", "pass"), "APPLICANT_PASSPORT_NUMBER"),
+    (("geschlecht", "gender", "anrede"), "APPLICANT_GENDER"),
 ]
 
 
@@ -45,10 +46,7 @@ async def fill_personal_details(page: Page, logger: Logger) -> None:
         tag = await field.evaluate("el => el.tagName.toLowerCase()")
         field_type = (await field.get_attribute("type") or "").lower()
         if tag == "select":
-            try:
-                await field.select_option(label=value)
-            except Exception:
-                await field.select_option(value=value)
+            await _select_option(field, value)
         elif field_type in {"checkbox", "radio"}:
             if value.lower() in {"1", "true", "yes", "ja"}:
                 await field.check()
@@ -170,3 +168,29 @@ def _normalize_label(label: str) -> str:
     for source, target in replacements.items():
         normalized = normalized.replace(source, target)
     return re.sub(r"\s+", " ", normalized)
+
+
+async def _select_option(field, value: str) -> None:
+    last_error: Exception | None = None
+    for candidate in _select_value_candidates(value):
+        try:
+            await field.select_option(label=candidate)
+            return
+        except Exception as exc:
+            last_error = exc
+        try:
+            await field.select_option(value=candidate)
+            return
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+
+
+def _select_value_candidates(value: str) -> list[str]:
+    normalized = value.strip().lower()
+    if normalized in {"male", "m", "mann", "maennlich", "männlich", "herr"}:
+        return [value, "male", "männlich", "maennlich", "m", "Herr"]
+    if normalized in {"female", "f", "frau", "weiblich"}:
+        return [value, "female", "weiblich", "f", "Frau"]
+    return [value]
