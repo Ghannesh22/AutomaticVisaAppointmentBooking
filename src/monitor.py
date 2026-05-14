@@ -10,6 +10,7 @@ from src.booker import book_slot
 from src.config_loader import AppConfig
 from src.logger import safe_filename
 from src.slot_checker import find_july_slot
+from src.state import has_success_flag, success_flag_path
 
 
 class FlowRestartRequired(RuntimeError):
@@ -17,14 +18,40 @@ class FlowRestartRequired(RuntimeError):
 
 
 async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
+    if has_success_flag():
+        logger.warning(
+            "Success flag exists at %s; stopping before monitoring to prevent duplicate booking",
+            success_flag_path(),
+        )
+        return True
+
     deadline = datetime.now() + timedelta(minutes=config.max_runtime_minutes)
     attempt = 1
+    failure_count = 0
+    base_backoff_seconds = min(60, max(5, config.check_interval_seconds // 4))
+    max_backoff_seconds = max(config.check_interval_seconds, base_backoff_seconds)
 
     while datetime.now() < deadline:
+        if has_success_flag():
+            logger.warning(
+                "Success flag exists at %s; stopping monitor to prevent duplicate booking",
+                success_flag_path(),
+            )
+            return True
+
         logger.info("Starting booking flow attempt %s", attempt)
         try:
             await navigate_to_calendar(page, config, logger)
+            if failure_count:
+                logger.info("Page load succeeded; resetting failure backoff")
+            failure_count = 0
             while datetime.now() < deadline:
+                if has_success_flag():
+                    logger.warning(
+                        "Success flag exists at %s; stopping monitor to prevent duplicate booking",
+                        success_flag_path(),
+                    )
+                    return True
                 await _ensure_calendar_page(page)
                 slot = await find_july_slot(page, config, logger)
                 if slot:
@@ -40,7 +67,15 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                 )
                 await asyncio.sleep(config.check_interval_seconds)
                 await page.reload(wait_until="networkidle")
-        except (FlowRestartRequired, PlaywrightTimeoutError, ValueError) as exc:
+        except ValueError as exc:
+            screenshot = safe_filename("error")
+            try:
+                await page.screenshot(path=str(screenshot), full_page=True)
+                logger.error("Configuration or form-fill error: %s. Saved screenshot: %s", exc, screenshot)
+            except Exception:
+                logger.error("Configuration or form-fill error before screenshot could be saved: %s", exc)
+            return False
+        except (FlowRestartRequired, PlaywrightTimeoutError) as exc:
             screenshot = safe_filename("error")
             try:
                 await page.screenshot(path=str(screenshot), full_page=True)
@@ -48,7 +83,17 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
             except Exception:
                 logger.error("Flow failed before screenshot could be saved: %s", exc)
             attempt += 1
-            await asyncio.sleep(5)
+            failure_count += 1
+            backoff_seconds = min(
+                max_backoff_seconds,
+                base_backoff_seconds * (2 ** (failure_count - 1)),
+            )
+            logger.info(
+                "Navigation failure count is %s; backing off for %s seconds before restart",
+                failure_count,
+                backoff_seconds,
+            )
+            await asyncio.sleep(backoff_seconds)
             continue
 
     logger.info("Max runtime reached without a successful booking")

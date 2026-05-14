@@ -7,6 +7,7 @@ from src.browser import browser_page
 from src.config_loader import load_config
 from src.logger import setup_logger
 from src.monitor import run_monitor
+from src.state import has_success_flag, success_flag_path
 
 
 async def async_main() -> int:
@@ -18,6 +19,13 @@ async def async_main() -> int:
     logger.info("Headless: %s", config.headless)
     logger.info("Dry run: %s", config.dry_run)
     logger.info("Polling interval: %s seconds", config.check_interval_seconds)
+
+    if has_success_flag():
+        logger.warning(
+            "Success flag exists at %s; stopping before browser start to prevent duplicate booking",
+            success_flag_path(),
+        )
+        return 0
 
     async with browser_page(config) as page:
         success = await run_monitor(page, config, logger)

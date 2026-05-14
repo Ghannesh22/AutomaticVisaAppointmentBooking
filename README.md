@@ -14,6 +14,8 @@ The project starts in visible browser mode with `dry_run: true`. Dry-run mode na
 - No CAPTCHA bypassing, queue bypassing, login bypassing, rate-limit evasion, or anti-bot circumvention.
 - Monitoring uses `check_interval_seconds` from `config.yaml`.
 - The script stops after a successful booking submission.
+- After a successful real booking submission, the script creates `confirmations/booking_success.flag`.
+- If that flag exists, future runs stop before monitoring or submitting anything.
 - `.env`, logs, screenshots, traces, videos, and confirmation files are ignored by Git.
 - Screenshots are saved only on errors or successful real booking.
 
@@ -73,6 +75,17 @@ The script performs this German website flow:
 12. In real mode, submits the booking, sends a Gmail SMTP notification, and stops.
 
 If the session expires or the navigation no longer matches the expected flow, the script logs the error, saves an error screenshot, and restarts from Step 1.
+Repeated navigation failures use temporary exponential backoff before restarting the flow. The backoff resets after the calendar page loads successfully.
+
+## Duplicate Booking Protection
+
+Real booking mode creates this local flag after a successful submission:
+
+```text
+confirmations/booking_success.flag
+```
+
+The flag is intentionally ignored by Git because it can contain appointment details. Leave it in place after a successful booking to prevent accidental duplicate submissions.
 
 ## Email Notification
 

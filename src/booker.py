@@ -10,9 +10,17 @@ from src.email_notifier import send_booking_email
 from src.form_filler import fill_personal_details
 from src.logger import safe_filename
 from src.slot_checker import SlotCandidate
+from src.state import has_success_flag, success_flag_path, write_success_flag
 
 
 async def book_slot(page: Page, config: AppConfig, slot: SlotCandidate, logger: Logger) -> bool:
+    if has_success_flag():
+        logger.warning(
+            "Success flag already exists at %s; refusing to select or submit another booking",
+            success_flag_path(),
+        )
+        return True
+
     logger.info("Selecting candidate slot: %s", slot.raw_text)
     await slot.element.click()
     await page.wait_for_load_state("networkidle")
@@ -25,6 +33,13 @@ async def book_slot(page: Page, config: AppConfig, slot: SlotCandidate, logger: 
     if config.dry_run:
         logger.info("Dry-run mode is enabled; stopping before final booking submission")
         return False
+
+    if has_success_flag():
+        logger.warning(
+            "Success flag appeared before final submit at %s; refusing duplicate submission",
+            success_flag_path(),
+        )
+        return True
 
     logger.info("Dry-run disabled; submitting final booking")
     await _click_final_submit(page, logger)
@@ -39,6 +54,13 @@ async def book_slot(page: Page, config: AppConfig, slot: SlotCandidate, logger: 
 
     logger.info("Saved success screenshot to %s", screenshot)
     logger.info("Saved confirmation text to %s", confirmation_file)
+    flag = write_success_flag(
+        appointment_date=slot.date_text,
+        appointment_time=slot.time_text,
+        location=config.appointment_location,
+        reference=reference,
+    )
+    logger.info("Created booking success flag at %s", flag)
     send_booking_email(
         appointment_date=slot.date_text,
         appointment_time=slot.time_text,
