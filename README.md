@@ -35,6 +35,80 @@ If your Windows machine uses the Python launcher, `py` can be used instead of `p
 Edit `.env` with applicant details and Gmail SMTP values. For Gmail, use an app password, not your normal account password.
 Leave the SMTP settings empty to disable project email notifications; the official appointment email will still go to `APPLICANT_EMAIL`.
 
+## Always-On VPS Setup
+
+Use a small Ubuntu VPS so monitoring continues when your laptop is off. Keep the GitHub repo private and create `.env` directly on the VPS; do not commit personal details.
+
+On the VPS:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv
+sudo useradd --system --create-home --shell /usr/sbin/nologin visa-monitor
+sudo mkdir -p /opt/visa-monitor
+sudo chown visa-monitor:visa-monitor /opt/visa-monitor
+```
+
+Clone the private repo using your GitHub authentication method, then install dependencies:
+
+```bash
+sudo -u visa-monitor git clone https://github.com/Ghannesh22/AutomaticVisaAppointmentBooking.git /opt/visa-monitor/AutomaticVisaAppointmentBooking
+cd /opt/visa-monitor/AutomaticVisaAppointmentBooking
+sudo -u visa-monitor python3 -m venv .venv
+sudo -u visa-monitor .venv/bin/python -m pip install -r requirements.txt
+sudo -u visa-monitor .venv/bin/python -m playwright install chromium
+sudo .venv/bin/python -m playwright install-deps chromium
+```
+
+Create the private `.env` file on the VPS:
+
+```bash
+sudo -u visa-monitor nano /opt/visa-monitor/AutomaticVisaAppointmentBooking/.env
+```
+
+For VPS monitoring, edit `config.yaml`:
+
+```yaml
+headless: true
+dry_run: true
+```
+
+Run one dry-run check manually:
+
+```bash
+cd /opt/visa-monitor/AutomaticVisaAppointmentBooking
+sudo -u visa-monitor .venv/bin/python -m src.main
+```
+
+After dry-run validation, set:
+
+```yaml
+dry_run: false
+```
+
+Install the systemd service:
+
+```bash
+sudo cp /opt/visa-monitor/AutomaticVisaAppointmentBooking/deploy/visa-monitor.service.example /etc/systemd/system/visa-monitor.service
+sudo systemctl daemon-reload
+sudo systemctl enable visa-monitor
+sudo systemctl start visa-monitor
+```
+
+Check status and logs:
+
+```bash
+sudo systemctl status visa-monitor
+sudo journalctl -u visa-monitor -f
+sudo -u visa-monitor tail -f /opt/visa-monitor/AutomaticVisaAppointmentBooking/logs/monitor.log
+```
+
+Stop monitoring:
+
+```bash
+sudo systemctl stop visa-monitor
+```
+
 ## Configuration
 
 Edit `config.yaml`:

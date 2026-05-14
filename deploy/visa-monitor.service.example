@@ -1,0 +1,16 @@
+[Unit]
+Description=Visa appointment monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/visa-monitor/AutomaticVisaAppointmentBooking
+ExecStart=/opt/visa-monitor/AutomaticVisaAppointmentBooking/.venv/bin/python -m src.main
+Restart=always
+RestartSec=60
+User=visa-monitor
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
