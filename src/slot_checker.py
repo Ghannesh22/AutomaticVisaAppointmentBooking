@@ -54,127 +54,127 @@ class SlotCheckResult:
     month_observations: list[MonthSlotObservation] = field(default_factory=list)
 
 
+async def find_target_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCandidate | None:
+    return (await check_target_slot(page, config, logger)).slot
+
+
 async def find_july_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCandidate | None:
-    return (await check_july_slot(page, config, logger)).slot
+    return await find_target_slot(page, config, logger)
 
 
 async def check_july_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCheckResult:
-    month_observations = await _move_calendar_to_target_month(page, config, logger)
-    checked_at = datetime.now()
-    page_text = await page.locator("body").inner_text()
-    target_month_visible = _target_month_visible(page_text.lower(), config)
-    visible_month = _first_visible_month(page_text)
-    snippet = _page_snippet(page_text)
+    return await check_target_slot(page, config, logger)
 
-    handles = await page.locator(
-        "a, button, input[type=button], input[type=submit], td[role=gridcell], "
-        "[role=button], .ui-state-default, .ui-datepicker-calendar td"
-    ).element_handles()
 
+async def check_target_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCheckResult:
+    observations: list[MonthSlotObservation] = []
     outside_slot_text: str | None = None
     outside_month_observations: dict[str, MonthSlotObservation] = {}
-    for handle in handles:
-        if not await _is_candidate_enabled(handle):
-            continue
-        text = await _element_text(handle)
-        parsed_date = _extract_date(text, config, target_month_visible, visible_month)
-        if not parsed_date:
-            continue
-        if parsed_date.year != config.target_year or parsed_date.month != config.target_month_number:
-            if not outside_slot_text:
-                outside_slot_text = text[:160]
-            month = _month_key(parsed_date.year, parsed_date.month)
-            if month not in outside_month_observations:
-                outside_month_observations[month] = MonthSlotObservation(
-                    month=month,
-                    target_month=False,
-                    status="slots_available",
-                    detail=text[:160],
-                )
-            continue
+    last_checked_at = datetime.now()
+    last_snippet = "No visible page text"
+    last_page_text = ""
+    last_visible_month_key: str | None = None
+    first_target_month = min(config.target_months)
+    final_target_month = max(config.target_months)
 
-        time_text = _extract_time(text) or "Unknown"
-        slot = SlotCandidate(
-            element=handle,
-            date_text=parsed_date.isoformat(),
-            time_text=time_text,
-            raw_text=text,
-        )
-        _log_slot_state(
-            logger,
-            "valid_july_slot_detected",
-            checked_at,
-            snippet,
-            f"{parsed_date.isoformat()} {time_text} | {text[:160]}",
-        )
-        month_observations.extend(outside_month_observations.values())
-        month_observations.append(
-            MonthSlotObservation(
-                month=_month_key(parsed_date.year, parsed_date.month),
-                target_month=True,
-                status="slots_available",
-                detail=f"{parsed_date.isoformat()} {time_text} | {text[:160]}",
-            )
-        )
-        return SlotCheckResult(
-            status="valid_july_slot_detected",
-            checked_at=checked_at,
-            snippet=snippet,
-            slot=slot,
-            month_observations=month_observations,
-        )
-
-    if outside_slot_text:
-        _log_slot_state(logger, "slot_detected_outside_july_2026", checked_at, snippet, outside_slot_text)
-        month_observations.extend(outside_month_observations.values())
-        if visible_month and _target_month_visible(page_text.lower(), config):
-            month_observations.append(
-                MonthSlotObservation(
-                    month=_month_key(*visible_month),
-                    target_month=True,
-                    status=_empty_status(page_text),
-                )
-            )
-        return SlotCheckResult(
-            status="slot_detected_outside_july_2026",
-            checked_at=checked_at,
-            snippet=snippet,
-            outside_slot_text=outside_slot_text,
-            month_observations=month_observations,
-        )
-
-    status = _empty_status(page_text)
-    _log_slot_state(logger, status, checked_at, snippet)
-    if visible_month and _target_month_visible(page_text.lower(), config):
-        month_observations.append(
-            MonthSlotObservation(
-                month=_month_key(*visible_month),
-                target_month=True,
-                status=status,
-            )
-        )
-    return SlotCheckResult(
-        status=status,
-        checked_at=checked_at,
-        snippet=snippet,
-        month_observations=month_observations,
-    )
-
-
-async def _move_calendar_to_target_month(
-    page: Page, config: AppConfig, logger: Logger
-) -> list[MonthSlotObservation]:
-    observations: list[MonthSlotObservation] = []
     for _ in range(30):
-        page_text = (await page.locator("body").inner_text()).lower()
+        raw_page_text = await page.locator("body").inner_text()
+        page_text = raw_page_text.lower()
+        last_page_text = raw_page_text
+        last_checked_at = datetime.now()
+        last_snippet = _page_snippet(raw_page_text)
+        visible_month = _first_visible_month(raw_page_text)
+        visible_month_key = _month_key(*visible_month) if visible_month else None
+        last_visible_month_key = visible_month_key
+
+        if visible_month_key and visible_month_key > first_target_month:
+            previous_button = page.locator(
+                "a[title*='Zurück'], a[aria-label*='Zurück'], "
+                "button[title*='Zurück'], button[aria-label*='Zurück'], "
+                ".ui-datepicker-prev, [data-handler='prev']"
+            ).first
+            if await previous_button.count() and await previous_button.is_visible():
+                logger.info(
+                    "Calendar is past first target month %s; clicking previous-month control",
+                    first_target_month,
+                )
+                await previous_button.click()
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(500)
+                continue
+
         observation = await _observe_visible_month(page, config, page_text)
         if observation:
             observations.append(observation)
-            _log_month_slot_state(logger, observation, datetime.now(), _page_snippet(page_text))
+            _log_month_slot_state(logger, observation, last_checked_at, last_snippet)
 
-        if _target_month_visible(page_text, config):
-            logger.info("Calendar/page text contains target month %s", config.target_month)
-            return observations
+        handles = await page.locator(
+            "a, button, input[type=button], input[type=submit], td[role=gridcell], "
+            "[role=button], .ui-state-default, .ui-datepicker-calendar td"
+        ).element_handles()
+
+        for handle in handles:
+            if not await _is_candidate_enabled(handle):
+                continue
+            text = await _element_text(handle)
+            parsed_date = _extract_date(
+                text,
+                config,
+                _target_month_visible(page_text, config),
+                visible_month,
+            )
+            if not parsed_date:
+                continue
+
+            month = _month_key(parsed_date.year, parsed_date.month)
+            if month not in config.target_months:
+                if not outside_slot_text:
+                    outside_slot_text = text[:160]
+                if month not in outside_month_observations:
+                    outside_month_observations[month] = MonthSlotObservation(
+                        month=month,
+                        target_month=False,
+                        status="slots_available",
+                        detail=text[:160],
+                    )
+                continue
+
+            time_text = _extract_time(text) or "Unknown"
+            slot = SlotCandidate(
+                element=handle,
+                date_text=parsed_date.isoformat(),
+                time_text=time_text,
+                raw_text=text,
+            )
+            detail = f"{parsed_date.isoformat()} {time_text} | {text[:160]}"
+            _log_slot_state(
+                logger,
+                "valid_target_slot_detected",
+                last_checked_at,
+                last_snippet,
+                detail,
+            )
+            observations.extend(outside_month_observations.values())
+            observations.append(
+                MonthSlotObservation(
+                    month=month,
+                    target_month=True,
+                    status="slots_available",
+                    detail=detail,
+                )
+            )
+            return SlotCheckResult(
+                status="valid_target_slot_detected",
+                checked_at=last_checked_at,
+                snippet=last_snippet,
+                slot=slot,
+                month_observations=observations,
+            )
+
+        if visible_month_key in config.target_months:
+            logger.info("Checked target month %s", visible_month_key)
+        if visible_month_key and visible_month_key >= final_target_month:
+            break
 
         next_button = page.locator(
             "a[title*='Weiter'], a[aria-label*='Weiter'], "
@@ -182,24 +182,59 @@ async def _move_calendar_to_target_month(
             ".ui-datepicker-next, [data-handler='next']"
         ).first
         if await next_button.count() == 0:
-            return observations
+            break
         if not await next_button.is_visible():
-            return observations
+            break
 
-        logger.info("Target month not visible yet; clicking next-month control")
+        logger.info(
+            "Target month not complete yet; clicking next-month control toward %s",
+            final_target_month,
+        )
         await next_button.click()
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(500)
-    return observations
+
+    observations.extend(outside_month_observations.values())
+    if outside_slot_text:
+        _log_slot_state(logger, "slot_detected_outside_target_months", last_checked_at, last_snippet, outside_slot_text)
+        return SlotCheckResult(
+            status="slot_detected_outside_target_months",
+            checked_at=last_checked_at,
+            snippet=last_snippet,
+            outside_slot_text=outside_slot_text,
+            month_observations=observations,
+        )
+
+    status = _empty_status(last_page_text)
+    if last_visible_month_key in config.target_months:
+        observations.append(
+            MonthSlotObservation(
+                month=last_visible_month_key,
+                target_month=True,
+                status=status,
+            )
+        )
+    _log_slot_state(logger, status, last_checked_at, last_snippet)
+    return SlotCheckResult(
+        status=status,
+        checked_at=last_checked_at,
+        snippet=last_snippet,
+        month_observations=observations,
+    )
 
 
 def _target_month_visible(text: str, config: AppConfig) -> bool:
+    return any(_month_visible(text, month) for month in config.target_months)
+
+
+def _month_visible(text: str, month_key: str) -> bool:
+    year, month_number = month_key.split("-")
     month_name = next(
         name
         for name, number in MONTHS_DE.items()
-        if number == config.target_month_number and "ae" not in name
+        if number == int(month_number) and "ae" not in name
     )
-    return month_name in text and str(config.target_year) in text
+    return month_name in text and year in text
 
 
 async def _observe_visible_month(
@@ -211,7 +246,7 @@ async def _observe_visible_month(
 
     year, month = visible_month
     visible_month_key = _month_key(year, month)
-    target_month = visible_month_key == config.target_month
+    target_month = visible_month_key in config.target_months
     handles = await page.locator(
         "a, button, input[type=button], input[type=submit], td[role=gridcell], "
         "[role=button], .ui-state-default, .ui-datepicker-calendar td"

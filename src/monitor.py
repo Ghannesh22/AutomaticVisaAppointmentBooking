@@ -11,7 +11,7 @@ from src.booker import book_slot
 from src.config_loader import AppConfig
 from src.email_notifier import send_heartbeat_email
 from src.logger import safe_filename
-from src.slot_checker import check_july_slot
+from src.slot_checker import check_target_slot
 from src.state import has_success_flag, success_flag_path
 
 
@@ -115,7 +115,7 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                     stats.state = "checking_calendar"
                     await _ensure_calendar_page(page)
                     stats.last_successful_calendar_load = datetime.now()
-                    result = await check_july_slot(page, config, logger)
+                    result = await check_target_slot(page, config, logger)
                     stats.total_checks += 1
                     _record_open_month_observations(stats, result.month_observations, config, logger)
                     logger.info(
@@ -133,8 +133,8 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                     if result.slot:
                         stats.state = "slot_detected"
                         logger.info(
-                            "slot_detection_result | valid target-month slot detected | target_month=%s",
-                            config.target_month,
+                            "slot_detection_result | valid target-month slot detected | target_months=%s",
+                            ",".join(config.target_months),
                         )
                         success = await book_slot(page, config, result.slot, logger)
                         if success:
@@ -399,6 +399,6 @@ def _record_open_month_observations(
             logger.info(
                 "non_target_slot_month_seen | month=%s | booking_restricted_to=%s | detail='%s'",
                 observation.month,
-                config.target_month,
+                ",".join(config.target_months),
                 observation.detail or "",
             )

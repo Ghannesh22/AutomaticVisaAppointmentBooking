@@ -16,7 +16,7 @@ async def async_main() -> int:
     config = load_config()
 
     logger.info("Starting visa appointment monitor")
-    logger.info("Target month: %s", config.target_month)
+    logger.info("Target months: %s", ", ".join(config.target_months))
     logger.info("Headless: %s", config.headless)
     logger.info("Dry run: %s", config.dry_run)
     logger.info("Polling interval: %s seconds", config.check_interval_seconds)
