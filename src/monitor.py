@@ -29,6 +29,7 @@ class MonitoringStats:
     current_wait_seconds: int = 0
     current_retry_count: int = 0
     state: str = "starting"
+    open_months_seen: set[str] = field(default_factory=set)
 
     def summary(self) -> str:
         uptime = datetime.now() - self.started_at
@@ -40,7 +41,8 @@ class MonitoringStats:
         return (
             "monitor_summary | state=%s | uptime=%s | total_checks=%s | "
             "browser_restarts=%s | failures=%s | retry_count=%s | "
-            "current_wait_seconds=%s | last_successful_calendar_load=%s"
+            "current_wait_seconds=%s | last_successful_calendar_load=%s | "
+            "open_months_seen=%s"
             % (
                 self.state,
                 str(uptime).split(".")[0],
@@ -50,6 +52,7 @@ class MonitoringStats:
                 self.current_retry_count,
                 self.current_wait_seconds,
                 last_load,
+                ",".join(sorted(self.open_months_seen)) or "none",
             )
         )
 
@@ -114,6 +117,7 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                     stats.last_successful_calendar_load = datetime.now()
                     result = await check_july_slot(page, config, logger)
                     stats.total_checks += 1
+                    _record_open_month_observations(stats, result.month_observations, config, logger)
                     logger.info(
                         "monitor_state | state=%s | checks=%s | result=%s | retry_count=%s | wait_seconds=%s",
                         stats.state,
@@ -128,7 +132,10 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
 
                     if result.slot:
                         stats.state = "slot_detected"
-                        logger.info("slot_detection_result | valid July 2026 slot detected")
+                        logger.info(
+                            "slot_detection_result | valid target-month slot detected | target_month=%s",
+                            config.target_month,
+                        )
                         success = await book_slot(page, config, result.slot, logger)
                         if success:
                             stats.state = "booking_submitted"
@@ -375,3 +382,23 @@ def _heartbeat_due(config: AppConfig, last_heartbeat_sent: datetime) -> bool:
     return datetime.now() - last_heartbeat_sent >= timedelta(
         minutes=config.heartbeat_interval_minutes
     )
+
+
+def _record_open_month_observations(
+    stats: MonitoringStats,
+    observations: list | None,
+    config: AppConfig,
+    logger: Logger,
+) -> None:
+    for observation in observations or []:
+        if observation.status != "slots_available":
+            continue
+        first_seen = observation.month not in stats.open_months_seen
+        stats.open_months_seen.add(observation.month)
+        if first_seen and not observation.target_month:
+            logger.info(
+                "non_target_slot_month_seen | month=%s | booking_restricted_to=%s | detail='%s'",
+                observation.month,
+                config.target_month,
+                observation.detail or "",
+            )

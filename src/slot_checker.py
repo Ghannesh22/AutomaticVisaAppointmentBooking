@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from logging import Logger
 
@@ -15,6 +15,7 @@ MONTHS_DE = {
     "februar": 2,
     "märz": 3,
     "maerz": 3,
+    "m\u00e4rz": 3,
     "april": 4,
     "mai": 5,
     "juni": 6,
@@ -36,12 +37,21 @@ class SlotCandidate:
 
 
 @dataclass
+class MonthSlotObservation:
+    month: str
+    target_month: bool
+    status: str
+    detail: str | None = None
+
+
+@dataclass
 class SlotCheckResult:
     status: str
     checked_at: datetime
     snippet: str
     slot: SlotCandidate | None = None
     outside_slot_text: str | None = None
+    month_observations: list[MonthSlotObservation] = field(default_factory=list)
 
 
 async def find_july_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCandidate | None:
@@ -49,10 +59,11 @@ async def find_july_slot(page: Page, config: AppConfig, logger: Logger) -> SlotC
 
 
 async def check_july_slot(page: Page, config: AppConfig, logger: Logger) -> SlotCheckResult:
-    await _move_calendar_to_target_month(page, config, logger)
+    month_observations = await _move_calendar_to_target_month(page, config, logger)
     checked_at = datetime.now()
     page_text = await page.locator("body").inner_text()
     target_month_visible = _target_month_visible(page_text.lower(), config)
+    visible_month = _first_visible_month(page_text)
     snippet = _page_snippet(page_text)
 
     handles = await page.locator(
@@ -61,16 +72,25 @@ async def check_july_slot(page: Page, config: AppConfig, logger: Logger) -> Slot
     ).element_handles()
 
     outside_slot_text: str | None = None
+    outside_month_observations: dict[str, MonthSlotObservation] = {}
     for handle in handles:
         if not await _is_candidate_enabled(handle):
             continue
         text = await _element_text(handle)
-        parsed_date = _extract_date(text, config, target_month_visible)
+        parsed_date = _extract_date(text, config, target_month_visible, visible_month)
         if not parsed_date:
             continue
         if parsed_date.year != config.target_year or parsed_date.month != config.target_month_number:
             if not outside_slot_text:
                 outside_slot_text = text[:160]
+            month = _month_key(parsed_date.year, parsed_date.month)
+            if month not in outside_month_observations:
+                outside_month_observations[month] = MonthSlotObservation(
+                    month=month,
+                    target_month=False,
+                    status="slots_available",
+                    detail=text[:160],
+                )
             continue
 
         time_text = _extract_time(text) or "Unknown"
@@ -87,33 +107,74 @@ async def check_july_slot(page: Page, config: AppConfig, logger: Logger) -> Slot
             snippet,
             f"{parsed_date.isoformat()} {time_text} | {text[:160]}",
         )
+        month_observations.extend(outside_month_observations.values())
+        month_observations.append(
+            MonthSlotObservation(
+                month=_month_key(parsed_date.year, parsed_date.month),
+                target_month=True,
+                status="slots_available",
+                detail=f"{parsed_date.isoformat()} {time_text} | {text[:160]}",
+            )
+        )
         return SlotCheckResult(
             status="valid_july_slot_detected",
             checked_at=checked_at,
             snippet=snippet,
             slot=slot,
+            month_observations=month_observations,
         )
 
     if outside_slot_text:
         _log_slot_state(logger, "slot_detected_outside_july_2026", checked_at, snippet, outside_slot_text)
+        month_observations.extend(outside_month_observations.values())
+        if visible_month and _target_month_visible(page_text.lower(), config):
+            month_observations.append(
+                MonthSlotObservation(
+                    month=_month_key(*visible_month),
+                    target_month=True,
+                    status=_empty_status(page_text),
+                )
+            )
         return SlotCheckResult(
             status="slot_detected_outside_july_2026",
             checked_at=checked_at,
             snippet=snippet,
             outside_slot_text=outside_slot_text,
+            month_observations=month_observations,
         )
 
     status = _empty_status(page_text)
     _log_slot_state(logger, status, checked_at, snippet)
-    return SlotCheckResult(status=status, checked_at=checked_at, snippet=snippet)
+    if visible_month and _target_month_visible(page_text.lower(), config):
+        month_observations.append(
+            MonthSlotObservation(
+                month=_month_key(*visible_month),
+                target_month=True,
+                status=status,
+            )
+        )
+    return SlotCheckResult(
+        status=status,
+        checked_at=checked_at,
+        snippet=snippet,
+        month_observations=month_observations,
+    )
 
 
-async def _move_calendar_to_target_month(page: Page, config: AppConfig, logger: Logger) -> None:
+async def _move_calendar_to_target_month(
+    page: Page, config: AppConfig, logger: Logger
+) -> list[MonthSlotObservation]:
+    observations: list[MonthSlotObservation] = []
     for _ in range(30):
         page_text = (await page.locator("body").inner_text()).lower()
+        observation = await _observe_visible_month(page, config, page_text)
+        if observation:
+            observations.append(observation)
+            _log_month_slot_state(logger, observation, datetime.now(), _page_snippet(page_text))
+
         if _target_month_visible(page_text, config):
             logger.info("Calendar/page text contains target month %s", config.target_month)
-            return
+            return observations
 
         next_button = page.locator(
             "a[title*='Weiter'], a[aria-label*='Weiter'], "
@@ -121,14 +182,15 @@ async def _move_calendar_to_target_month(page: Page, config: AppConfig, logger: 
             ".ui-datepicker-next, [data-handler='next']"
         ).first
         if await next_button.count() == 0:
-            return
+            return observations
         if not await next_button.is_visible():
-            return
+            return observations
 
         logger.info("Target month not visible yet; clicking next-month control")
         await next_button.click()
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(500)
+    return observations
 
 
 def _target_month_visible(text: str, config: AppConfig) -> bool:
@@ -138,6 +200,54 @@ def _target_month_visible(text: str, config: AppConfig) -> bool:
         if number == config.target_month_number and "ae" not in name
     )
     return month_name in text and str(config.target_year) in text
+
+
+async def _observe_visible_month(
+    page: Page, config: AppConfig, page_text: str
+) -> MonthSlotObservation | None:
+    visible_month = _first_visible_month(page_text)
+    if not visible_month:
+        return None
+
+    year, month = visible_month
+    visible_month_key = _month_key(year, month)
+    target_month = visible_month_key == config.target_month
+    handles = await page.locator(
+        "a, button, input[type=button], input[type=submit], td[role=gridcell], "
+        "[role=button], .ui-state-default, .ui-datepicker-calendar td"
+    ).element_handles()
+
+    for handle in handles:
+        if not await _is_candidate_enabled(handle):
+            continue
+        text = await _element_text(handle)
+        parsed_date = _extract_date(text, config, default_month=visible_month)
+        if parsed_date and parsed_date.year == year and parsed_date.month == month:
+            return MonthSlotObservation(
+                month=visible_month_key,
+                target_month=target_month,
+                status="slots_available",
+                detail=text[:160],
+            )
+
+    return MonthSlotObservation(
+        month=visible_month_key,
+        target_month=target_month,
+        status=_empty_status(page_text),
+    )
+
+
+def _first_visible_month(text: str) -> tuple[int, int] | None:
+    normalized = text.lower()
+    for month_name, year in re.findall(r"\b([a-z\u00e4\u00f6\u00fcÃ¤Ã¶Ã¼]+)\s+(\d{4})\b", normalized):
+        month = MONTHS_DE.get(month_name)
+        if month:
+            return int(year), month
+    return None
+
+
+def _month_key(year: int, month: int) -> str:
+    return f"{year:04d}-{month:02d}"
 
 
 async def _is_candidate_enabled(handle: ElementHandle) -> bool:
@@ -163,7 +273,12 @@ async def _element_text(handle: ElementHandle) -> str:
     )
 
 
-def _extract_date(text: str, config: AppConfig, target_month_visible: bool = False) -> date | None:
+def _extract_date(
+    text: str,
+    config: AppConfig,
+    target_month_visible: bool = False,
+    default_month: tuple[int, int] | None = None,
+) -> date | None:
     normalized = text.lower().replace(",", " ")
 
     for day, month, year in re.findall(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b", normalized):
@@ -181,8 +296,9 @@ def _extract_date(text: str, config: AppConfig, target_month_visible: bool = Fal
             return _safe_date(int(year), month, int(day))
 
     calendar_day = re.fullmatch(r"\s*(\d{1,2})\s*", normalized)
-    if calendar_day and target_month_visible:
-        return _safe_date(config.target_year, config.target_month_number, int(calendar_day.group(1)))
+    if calendar_day and (target_month_visible or default_month):
+        year, month = default_month or (config.target_year, config.target_month_number)
+        return _safe_date(year, month, int(calendar_day.group(1)))
 
     return None
 
@@ -260,4 +376,25 @@ def _log_slot_state(
     )
     if detail:
         message += " | detail='%s'" % detail
+    logger.info(message)
+
+
+def _log_month_slot_state(
+    logger: Logger,
+    observation: MonthSlotObservation,
+    checked_at: datetime,
+    snippet: str,
+) -> None:
+    message = (
+        "month_slot_state | checked_at=%s | month=%s | target_month=%s | result=%s | page='%s'"
+        % (
+            checked_at.isoformat(timespec="seconds"),
+            observation.month,
+            str(observation.target_month).lower(),
+            observation.status,
+            snippet,
+        )
+    )
+    if observation.detail:
+        message += " | detail='%s'" % observation.detail
     logger.info(message)

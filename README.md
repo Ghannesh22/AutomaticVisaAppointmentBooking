@@ -159,7 +159,7 @@ The script performs this German website flow:
 If the session expires or the navigation no longer matches the expected flow, the script logs the error, saves an error screenshot, and restarts from Step 1.
 Repeated navigation failures use temporary exponential backoff before restarting the flow. The backoff resets after the calendar page loads successfully.
 
-During dry-run monitoring, slot-state logs distinguish:
+During monitoring, slot-state logs distinguish:
 
 - no slots available
 - calendar loaded but empty
@@ -167,6 +167,14 @@ During dry-run monitoring, slot-state logs distinguish:
 - valid July 2026 slot detected
 
 Each slot-state log includes a timestamp and a short visible German page-text snippet without applicant details.
+
+The monitor also records month-level availability while it navigates toward the configured target month. Booking remains restricted to `target_month`, but the log now includes:
+
+- `month_slot_state` for each month page observed during the check
+- `non_target_slot_month_seen` the first time an opening is seen outside `target_month`
+- `open_months_seen` in the final `monitor_summary`
+
+Use these entries to see which months had openings during the run without allowing the script to book outside July 2026.
 
 ## Heartbeat Email
 
