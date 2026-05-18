@@ -17,7 +17,7 @@ class AppConfig:
     website_url: str
     visa_category: str
     appointment_location: str
-    target_month: str
+    target_months: tuple[str, ...]
     check_interval_seconds: int
     max_runtime_minutes: int
     headless: bool
@@ -25,6 +25,10 @@ class AppConfig:
     browser_timeout_seconds: int
     heartbeat_enabled: bool
     heartbeat_interval_minutes: int
+
+    @property
+    def target_month(self) -> str:
+        return self.target_months[0]
 
     @property
     def target_year(self) -> int:
@@ -44,7 +48,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         website_url=str(raw["website_url"]).strip(),
         visa_category=str(raw["visa_category"]).strip(),
         appointment_location=str(raw["appointment_location"]).strip(),
-        target_month=str(raw["target_month"]).strip(),
+        target_months=_target_months(raw),
         check_interval_seconds=int(raw.get("check_interval_seconds", 300)),
         max_runtime_minutes=int(raw.get("max_runtime_minutes", 720)),
         headless=_as_bool(raw.get("headless", False)),
@@ -70,7 +74,10 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _validate_config(config: AppConfig) -> None:
     if not config.website_url.startswith(("http://", "https://")):
         raise ValueError("website_url must be an http(s) URL")
-    datetime.strptime(config.target_month, "%Y-%m")
+    if not config.target_months:
+        raise ValueError("At least one target month is required")
+    for month in config.target_months:
+        datetime.strptime(month, "%Y-%m")
     if config.check_interval_seconds < 60:
         raise ValueError("check_interval_seconds must be at least 60")
     if config.max_runtime_minutes < 1:
@@ -87,3 +94,25 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _target_months(raw: dict[str, Any]) -> tuple[str, ...]:
+    value = raw.get("target_months", raw.get("target_month"))
+    if value is None:
+        raise ValueError("config.yaml must define target_months or target_month")
+    if isinstance(value, str):
+        months = [value]
+    elif isinstance(value, list):
+        months = value
+    else:
+        raise ValueError("target_months must be a list of YYYY-MM values")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in months:
+        month = str(item).strip()
+        if not month or month in seen:
+            continue
+        normalized.append(month)
+        seen.add(month)
+    return tuple(normalized)

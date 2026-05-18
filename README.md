@@ -1,6 +1,6 @@
 # Automatic Visa Appointment Booking
 
-Small Windows-friendly Python project for monitoring the StädteRegion Aachen appointment website and booking any available July 2026 appointment for:
+Small Windows-friendly Python project for monitoring the StädteRegion Aachen appointment website and booking any available July or August 2026 appointment for:
 
 - Function unit: `Ausländer- und Staatsangehörigkeitsbehörde`
 - Location: `RWTH - Außenstelle Super C`
@@ -116,6 +116,9 @@ Edit `config.yaml`:
 ```yaml
 check_interval_seconds: 300
 max_runtime_minutes: 720
+target_months:
+  - "2026-07"
+  - "2026-08"
 headless: false
 dry_run: true
 heartbeat_enabled: false
@@ -150,8 +153,8 @@ The script performs this German website flow:
 5. Clicks `Weiter`.
 6. Accepts the information dialog with `OK`.
 7. Clicks `Weiter` on the location/address page.
-8. Monitors the appointment calendar page for July 2026.
-9. Selects the first visible July 2026 slot.
+8. Monitors the appointment calendar page for July and August 2026.
+9. Selects the first visible July or August 2026 slot.
 10. Fills personal details from `.env`.
 11. In dry-run mode, stops before final submission.
 12. In real mode, submits the booking, sends a Gmail SMTP notification, and stops.
@@ -163,18 +166,18 @@ During monitoring, slot-state logs distinguish:
 
 - no slots available
 - calendar loaded but empty
-- slot detected outside July 2026
-- valid July 2026 slot detected
+- slot detected outside the configured target months
+- valid target-month slot detected
 
 Each slot-state log includes a timestamp and a short visible German page-text snippet without applicant details.
 
-The monitor also records month-level availability while it navigates toward the configured target month. Booking remains restricted to `target_month`, but the log now includes:
+The monitor also records month-level availability while it navigates through the configured target months. Booking remains restricted to `target_months`, but the log now includes:
 
 - `month_slot_state` for each month page observed during the check
-- `non_target_slot_month_seen` the first time an opening is seen outside `target_month`
+- `non_target_slot_month_seen` the first time an opening is seen outside `target_months`
 - `open_months_seen` in the final `monitor_summary`
 
-Use these entries to see which months had openings during the run without allowing the script to book outside July 2026.
+Use these entries to see which months had openings during the run without allowing the script to book outside July or August 2026.
 
 ## Heartbeat Email
 
@@ -256,7 +259,7 @@ Before filling anything, the script validates all detected required fields. It s
 3. Run `python -m src.smtp_test` and confirm the test email arrives.
 4. Run `python -m src.main`.
 5. Confirm the visible browser reaches the calendar page and logs one of the slot states in `logs/monitor.log`.
-6. If a July 2026 slot appears, dry-run mode selects it, fills Step 5, advances to the final overview page, and stops before final submission.
+6. If a July or August 2026 slot appears, dry-run mode selects it, fills Step 5, advances to the final overview page, and stops before final submission.
 7. Review `step5_fields_detected` in `logs/monitor.log` if the site reports missing or unmapped applicant fields.
 
 Only after dry-run reaches the final overview page safely, switch to:
