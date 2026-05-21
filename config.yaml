@@ -4,7 +4,7 @@ appointment_location: "RWTH - Außenstelle Super C"
 target_months:
   - "2026-07"
   - "2026-08"
-check_interval_seconds: 300
+check_interval_seconds: 120
 max_runtime_minutes: 720
 headless: false
 dry_run: true

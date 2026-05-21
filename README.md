@@ -114,7 +114,7 @@ sudo systemctl stop visa-monitor
 Edit `config.yaml`:
 
 ```yaml
-check_interval_seconds: 300
+check_interval_seconds: 120
 max_runtime_minutes: 720
 target_months:
   - "2026-07"
