@@ -7,7 +7,7 @@ Small Windows-friendly Python project for monitoring the StädteRegion Aachen ap
 - Category: `RWTH Studenten`
 - Website: <https://termine.staedteregion-aachen.de/auslaenderamt/>
 
-The project starts in visible browser mode with `dry_run: true`. Dry-run mode navigates the booking flow and stops before the final booking submission.
+The checked-in config starts in visible browser mode with `dry_run: false` for real monitoring. Set `dry_run: true` before a validation run; dry-run mode navigates the booking flow and stops before the final booking submission.
 
 ## Safety
 
@@ -114,18 +114,28 @@ sudo systemctl stop visa-monitor
 Edit `config.yaml`:
 
 ```yaml
-check_interval_seconds: 120
-max_runtime_minutes: 720
+website_url: "https://termine.staedteregion-aachen.de/auslaenderamt/"
+visa_category: "RWTH Studenten"
+appointment_location: "RWTH - Außenstelle Super C"
 target_months:
   - "2026-07"
   - "2026-08"
+check_interval_seconds: 120
+max_runtime_minutes: 720
 headless: false
-dry_run: true
+dry_run: false
+browser_timeout_seconds: 30
 heartbeat_enabled: false
 heartbeat_interval_minutes: 240
 ```
 
-Keep `headless: false` while validating the flow. After dry-run validation, set:
+Keep `headless: false` while validating the flow, especially if a manual captcha/security challenge may appear. For validation, temporarily set:
+
+```yaml
+dry_run: true
+```
+
+After dry-run validation, set:
 
 ```yaml
 dry_run: false
@@ -151,14 +161,14 @@ The script performs this German website flow:
 3. Opens `RWTH - Außenstelle Super C`.
 4. Increments `RWTH Studenten` to one applicant.
 5. Clicks `Weiter`.
-6. Accepts the information dialog with `OK`.
+6. Accepts the information dialog with `OK` if it is shown.
 7. Clicks `Weiter` on the location/address page.
 8. Monitors the appointment calendar page for July and August 2026.
 9. Selects the first visible July or August 2026 slot.
-10. Confirms the selected appointment summary by clicking `Ja`.
+10. Confirms the selected appointment summary by clicking `Ja` if that confirmation page is shown.
 11. Fills personal details from `.env`.
 12. In dry-run mode, stops before final submission.
-13. In real mode, clicks `Book now` / `Jetzt buchen`, sends a Gmail SMTP notification, and stops.
+13. In real mode, clicks `Book now` / `Jetzt buchen`, saves confirmation evidence, sends a Gmail SMTP notification if SMTP is configured, and stops.
 
 If the session expires or the navigation no longer matches the expected flow, the script logs the error, saves an error screenshot, and restarts from Step 1.
 Repeated navigation failures use temporary exponential backoff before restarting the flow. The backoff resets after the calendar page loads successfully.
@@ -203,7 +213,7 @@ The flag is intentionally ignored by Git because it can contain appointment deta
 
 ## Email Notification
 
-After a real booking submission, the script sends an email with:
+After a real booking submission, the script saves a success screenshot and confirmation text locally. If SMTP is configured, it also sends an email with:
 
 - appointment date
 - appointment time
@@ -238,7 +248,7 @@ If SMTP settings are empty, SMTP is treated as disabled and the test command exi
 
 ## Applicant Fields
 
-The Step 5 form can only be inspected after a slot is selected. When the dry-run reaches Step 5, the script logs detected visible form labels to `logs/monitor.log` as `step5_fields_detected` and maps known labels to these `.env` variables:
+The Step 5 form can only be inspected after a slot is selected. When the script reaches Step 5, it logs detected visible form labels to `logs/monitor.log` as `step5_fields_detected` and maps known labels to these `.env` variables:
 
 - `APPLICANT_FIRST_NAME`
 - `APPLICANT_LAST_NAME`
@@ -263,7 +273,7 @@ Before filling anything, the script validates all detected required fields. It s
 
 ## Dry-Run Testing Process
 
-1. Keep `dry_run: true` and `headless: false` in `config.yaml`.
+1. Set `dry_run: true` and `headless: false` in `config.yaml`.
 2. Fill `.env` with applicant details and Gmail SMTP settings.
 3. Run `python -m src.smtp_test` and confirm the test email arrives.
 4. Run `python -m src.main`.
