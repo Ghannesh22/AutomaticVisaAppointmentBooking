@@ -7,7 +7,7 @@ target_months:
 check_interval_seconds: 120
 max_runtime_minutes: 720
 headless: false
-dry_run: true
+dry_run: false
 browser_timeout_seconds: 30
 heartbeat_enabled: false
 heartbeat_interval_minutes: 240

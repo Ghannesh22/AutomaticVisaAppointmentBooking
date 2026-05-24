@@ -5,12 +5,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from logging import Logger
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from src.booker import book_slot
 from src.config_loader import AppConfig
 from src.email_notifier import send_heartbeat_email
 from src.logger import safe_filename
+from src.page_utils import click_locator_with_retry, wait_for_page_ready
 from src.slot_checker import check_target_slot
 from src.state import has_success_flag, success_flag_path
 
@@ -152,7 +155,8 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                         stats.current_wait_seconds,
                     )
                     await asyncio.sleep(config.check_interval_seconds)
-                    await page.reload(wait_until="networkidle")
+                    await page.reload(wait_until="domcontentloaded")
+                    await wait_for_page_ready(page, logger, "calendar reload")
             except ValueError as exc:
                 stats.state = "fatal_error"
                 stats.total_failures += 1
@@ -163,7 +167,7 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                 except Exception:
                     logger.error("Configuration or form-fill error before screenshot could be saved: %s", exc)
                 return False
-            except (FlowRestartRequired, PlaywrightTimeoutError) as exc:
+            except (FlowRestartRequired, PlaywrightTimeoutError, PlaywrightError) as exc:
                 stats.state = "navigation_failure"
                 stats.total_failures += 1
                 screenshot = safe_filename("error")
@@ -209,7 +213,8 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
 
 async def navigate_to_calendar(page: Page, config: AppConfig, logger: Logger) -> None:
     logger.info("Opening website: %s", config.website_url)
-    await page.goto(config.website_url, wait_until="networkidle")
+    await page.goto(config.website_url, wait_until="domcontentloaded")
+    await wait_for_page_ready(page, logger, "initial page load")
     await _accept_cookies_if_present(page, logger)
 
     logger.info("Step 1: selecting Ausländer- und Staatsangehörigkeitsbehörde")
@@ -220,26 +225,24 @@ async def navigate_to_calendar(page: Page, config: AppConfig, logger: Logger) ->
             "button[name='Ausländer- und Staatsangehörigkeitsbehörde']",
             "button:has-text('Ausländer- und Staatsangehörigkeitsbehörde')",
         ],
+        logger,
+        "function unit",
     )
-    await page.wait_for_load_state("networkidle")
 
     logger.info("Step 2: selecting location %s", config.appointment_location)
-    await _choose_location_or_section(page, config.appointment_location)
+    await _choose_location_or_section(page, config.appointment_location, logger)
 
     logger.info("Step 2: selecting category %s and applicant count 1", config.visa_category)
-    await _select_category_count(page, config.visa_category)
+    await _select_category_count(page, config.visa_category, logger)
 
     logger.info("Step 2: clicking Weiter")
-    await _click_first_visible(page, ["#WeiterButton", "input[value='Weiter']", "button:has-text('Weiter')"])
-    await page.wait_for_load_state("networkidle")
+    await _click_first_visible(page, ["#WeiterButton", "input[value='Weiter']", "button:has-text('Weiter')"], logger, "Step 2 Weiter")
 
     logger.info("Step 2 popup: accepting info dialog with OK")
-    await _click_ok_if_present(page)
-    await page.wait_for_load_state("networkidle")
+    await _click_ok_if_present(page, logger)
 
     logger.info("Step 3: continuing past location/address page")
-    await _click_first_visible(page, ["#WeiterButton", "input[value='Weiter']", "button:has-text('Weiter')"])
-    await page.wait_for_load_state("networkidle")
+    await _click_first_visible(page, ["#WeiterButton", "input[value='Weiter']", "button:has-text('Weiter')"], logger, "Step 3 Weiter")
 
     await _ensure_calendar_page(page)
     logger.info("Step 4: reached appointment calendar/slot page")
@@ -249,10 +252,10 @@ async def _accept_cookies_if_present(page: Page, logger: Logger) -> None:
     button = page.locator("#cookie_msg_btn_yes, input[value='Akzeptieren'], button:has-text('Akzeptieren')").first
     if await button.count() and await button.is_visible():
         logger.info("Accepting cookie banner")
-        await button.click()
+        await click_locator_with_retry(button, page, logger, "cookie accept")
 
 
-async def _choose_location_or_section(page: Page, text: str) -> None:
+async def _choose_location_or_section(page: Page, text: str, logger: Logger) -> None:
     selectors = [
         f"text={text}",
         f"button:has-text('{text}')",
@@ -263,7 +266,7 @@ async def _choose_location_or_section(page: Page, text: str) -> None:
     for selector in selectors:
         locator = page.locator(selector).first
         if await locator.count() and await locator.is_visible():
-            await locator.click()
+            await click_locator_with_retry(locator, page, logger, f"location/section {text}")
             return
     normalized = _normalize_selector_text(text)
     clicked = await page.evaluate(
@@ -283,18 +286,19 @@ async def _choose_location_or_section(page: Page, text: str) -> None:
         normalized,
     )
     if clicked:
+        await wait_for_page_ready(page, logger, f"location/section {text}")
         return
     raise FlowRestartRequired(f"Could not find location/section '{text}'")
 
 
-async def _select_category_count(page: Page, category: str) -> None:
+async def _select_category_count(page: Page, category: str, logger: Logger) -> None:
     category_input = page.locator(f"input.cnc-item[data-tevis-cncname='{category}']").first
     if await category_input.count():
         cnc_id = await category_input.get_attribute("data-tevis-cncid")
         if cnc_id:
             plus = page.locator(f"#button-plus-{cnc_id}").first
             if await plus.count():
-                await plus.click()
+                await click_locator_with_retry(plus, page, logger, f"category count {category}")
                 return
 
     plus_by_label = page.locator(
@@ -302,7 +306,7 @@ async def _select_category_count(page: Page, category: str) -> None:
         f"button[title*='Erhöhen'][title*='{category}']"
     ).first
     if await plus_by_label.count():
-        await plus_by_label.click()
+        await click_locator_with_retry(plus_by_label, page, logger, f"category count {category}")
         return
 
     label = page.locator(f"label:has-text('{category}'), div:has-text('{category}')").first
@@ -310,17 +314,16 @@ async def _select_category_count(page: Page, category: str) -> None:
         container = label.locator("xpath=ancestor-or-self::*[self::li or self::div][1]")
         plus = container.locator("button[data-type='plus'], button:has(.glyphicon-plus)").first
         if await plus.count():
-            await plus.click()
+            await click_locator_with_retry(plus, page, logger, f"category count {category}")
             return
 
     raise FlowRestartRequired(f"Could not select category '{category}'")
 
 
-async def _click_ok_if_present(page: Page) -> None:
+async def _click_ok_if_present(page: Page, logger: Logger) -> None:
     button = page.locator("#OKButton, button:has-text('OK')").first
     if await button.count() and await button.is_visible():
-        await button.click()
-        await page.wait_for_timeout(500)
+        await click_locator_with_retry(button, page, logger, "OK dialog")
 
 
 async def _ensure_calendar_page(page: Page) -> None:
@@ -331,11 +334,11 @@ async def _ensure_calendar_page(page: Page) -> None:
         raise FlowRestartRequired("Calendar page is no longer active")
 
 
-async def _click_first_visible(page: Page, selectors: list[str]) -> None:
+async def _click_first_visible(page: Page, selectors: list[str], logger: Logger, description: str) -> None:
     for selector in selectors:
         locator = page.locator(selector).first
         if await locator.count() and await locator.is_visible():
-            await locator.click()
+            await click_locator_with_retry(locator, page, logger, description)
             return
     raise FlowRestartRequired(f"Could not click any selector: {selectors}")
 

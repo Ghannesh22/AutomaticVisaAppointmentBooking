@@ -8,6 +8,7 @@ from logging import Logger
 from playwright.async_api import ElementHandle, Page
 
 from src.config_loader import AppConfig
+from src.page_utils import click_element_with_retry, click_locator_with_retry
 
 
 MONTHS_DE = {
@@ -98,9 +99,7 @@ async def check_target_slot(page: Page, config: AppConfig, logger: Logger) -> Sl
                     "Calendar is past first target month %s; clicking previous-month control",
                     first_target_month,
                 )
-                await previous_button.click()
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(500)
+                await click_locator_with_retry(previous_button, page, logger, "previous-month control")
                 continue
 
         observation = await _observe_visible_month(page, config, page_text)
@@ -139,7 +138,36 @@ async def check_target_slot(page: Page, config: AppConfig, logger: Logger) -> Sl
                     )
                 continue
 
-            time_text = _extract_time(text) or "Unknown"
+            time_text = _extract_time(text)
+            if not time_text:
+                slot = await _slot_from_expanded_date_group(page, handle, parsed_date, text, logger)
+                if slot:
+                    detail = f"{parsed_date.isoformat()} {slot.time_text} | {slot.raw_text[:160]}"
+                    _log_slot_state(
+                        logger,
+                        "valid_target_slot_detected",
+                        last_checked_at,
+                        last_snippet,
+                        detail,
+                    )
+                    observations.extend(outside_month_observations.values())
+                    observations.append(
+                        MonthSlotObservation(
+                            month=month,
+                            target_month=True,
+                            status="slots_available",
+                            detail=detail,
+                        )
+                    )
+                    return SlotCheckResult(
+                        status="valid_target_slot_detected",
+                        checked_at=last_checked_at,
+                        snippet=last_snippet,
+                        slot=slot,
+                        month_observations=observations,
+                    )
+                continue
+
             slot = SlotCandidate(
                 element=handle,
                 date_text=parsed_date.isoformat(),
@@ -190,9 +218,7 @@ async def check_target_slot(page: Page, config: AppConfig, logger: Logger) -> Sl
             "Target month not complete yet; clicking next-month control toward %s",
             final_target_month,
         )
-        await next_button.click()
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(500)
+        await click_locator_with_retry(next_button, page, logger, "next-month control")
 
     observations.extend(outside_month_observations.values())
     if outside_slot_text:
@@ -289,9 +315,12 @@ async def _is_candidate_enabled(handle: ElementHandle) -> bool:
     return await handle.evaluate(
         """el => {
             const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
             const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
             const unavailable = /disabled|unavailable|nicht|belegt|rot/i.test(el.className || '');
-            return !disabled && !unavailable && style.visibility !== 'hidden' && style.display !== 'none';
+            const visible = style.visibility !== 'hidden' && style.display !== 'none'
+                && rect.width > 0 && rect.height > 0;
+            return !disabled && !unavailable && visible;
         }"""
     )
 
@@ -341,6 +370,40 @@ def _extract_date(
 def _extract_time(text: str) -> str | None:
     match = re.search(r"\b([01]?\d|2[0-3])[:.][0-5]\d\b", text)
     return match.group(0).replace(".", ":") if match else None
+
+
+async def _slot_from_expanded_date_group(
+    page: Page,
+    date_handle: ElementHandle,
+    parsed_date: date,
+    date_text: str,
+    logger: Logger,
+) -> SlotCandidate | None:
+    logger.info("Target date row found without a time; expanding date group: %s", date_text[:120])
+    await click_element_with_retry(date_handle, page, logger, "target date row")
+    await page.wait_for_timeout(500)
+
+    handles = await page.locator(
+        "a, button, input[type=button], input[type=submit], label, "
+        "[role=button], [onclick], [tabindex]"
+    ).element_handles()
+    for handle in handles:
+        if not await _is_candidate_enabled(handle):
+            continue
+        text = await _element_text(handle)
+        time_text = _extract_time(text)
+        if not time_text:
+            continue
+        logger.info("Concrete appointment time found after expanding date row: %s", time_text)
+        return SlotCandidate(
+            element=handle,
+            date_text=parsed_date.isoformat(),
+            time_text=time_text,
+            raw_text=f"{date_text} | {text}",
+        )
+
+    logger.info("Expanded target date row, but no concrete appointment time was visible")
+    return None
 
 
 def _safe_date(year: int, month: int, day: int) -> date | None:
