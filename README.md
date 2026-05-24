@@ -155,9 +155,10 @@ The script performs this German website flow:
 7. Clicks `Weiter` on the location/address page.
 8. Monitors the appointment calendar page for July and August 2026.
 9. Selects the first visible July or August 2026 slot.
-10. Fills personal details from `.env`.
-11. In dry-run mode, stops before final submission.
-12. In real mode, submits the booking, sends a Gmail SMTP notification, and stops.
+10. Confirms the selected appointment summary by clicking `Ja`.
+11. Fills personal details from `.env`.
+12. In dry-run mode, stops before final submission.
+13. In real mode, clicks `Book now` / `Jetzt buchen`, sends a Gmail SMTP notification, and stops.
 
 If the session expires or the navigation no longer matches the expected flow, the script logs the error, saves an error screenshot, and restarts from Step 1.
 Repeated navigation failures use temporary exponential backoff before restarting the flow. The backoff resets after the calendar page loads successfully.
@@ -244,11 +245,19 @@ The Step 5 form can only be inspected after a slot is selected. When the dry-run
 - `APPLICANT_EMAIL`
 - `APPLICANT_PHONE`
 - `APPLICANT_DATE_OF_BIRTH`
+- `APPLICANT_REMARKS`
+- `APPLICANT_SECURITY_ANSWER`
+- `APPLICANT_DATA_PROCESSING_CONSENT` (`true`, `yes`, or `ja` checks the required GDPR consent box)
+- `APPLICANT_SAVE_PERSONAL_DATA_LOCALLY` (`true`, `yes`, or `ja` checks the optional local-save box)
 - `APPLICANT_NATIONALITY`
 - `APPLICANT_PASSPORT_NUMBER`
 - `APPLICANT_GENDER` (`male` maps to common German options such as `männlich`, `maennlich`, `m`, or `Herr`)
 
-`APPLICANT_DATE_OF_BIRTH` can be entered as `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`; the script formats it for the detected website field.
+`APPLICANT_EMAIL` is used for both the email and repeated-email fields. `APPLICANT_DATE_OF_BIRTH` can be entered as `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`; the script formats it for one combined date field or splits it into day, month, and year fields when the website shows separate inputs.
+
+Leave `APPLICANT_SECURITY_ANSWER` empty when the visible captcha/security challenge must be entered manually. When the script reaches that field, it restores the visible browser window if it was minimized, brings the tab to the front, focuses the field, plays an alert sound immediately, and repeats the sound every 10 seconds until an answer is entered.
+
+Field detection uses German synonym groups, so labels such as `Geburtsdatum`, `Datum der Geburt`, or split `Tag` / `Monat` / `Jahr` date fields map to the same birth-date value. The same approach is used for names, email, telephone, remarks, security question, consent, nationality, passport number, and gender.
 
 Before filling anything, the script validates all detected required fields. It stops with a clear error if a required mapped `.env` value is empty or if the website exposes a required field that is not mapped yet.
 
