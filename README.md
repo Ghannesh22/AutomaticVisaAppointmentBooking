@@ -11,7 +11,7 @@ The project is written for this appointment flow:
 
 The checked-in config starts in visible browser mode with `dry_run: true`. Dry-run mode navigates the booking flow and stops before final submission, which is the safe default for new users. Switch to `dry_run: false` only after you have verified the flow with your own applicant details.
 
-This repository is meant to be adapted by the person running it. Change the appointment URL, category, location, target months, and applicant fields before relying on it. The project is not affiliated with StädteRegion Aachen and does not bypass CAPTCHA, queues, logins, rate limits, or anti-bot systems.
+This repository is meant for RWTH students using the appointment flow above. For that use case, keep the appointment website URL, category, location, and navigation code unchanged. Change only your target months and private applicant details before relying on it. The project is not affiliated with StädteRegion Aachen and does not bypass CAPTCHA, queues, logins, rate limits, or anti-bot systems.
 
 ## Safety
 
@@ -46,12 +46,12 @@ Most users should not put personal information directly in Python code. Keep pri
 
 Edit `config.yaml` for appointment behavior:
 
-- `website_url`: the appointment website start page.
-- `visa_category`: the category/service name the bot should increment to one applicant.
-- `appointment_location`: the location/office text the bot should select.
+- `website_url`: keep the checked-in StädteRegion Aachen appointment start page for RWTH appointments.
+- `visa_category`: keep `RWTH Studenten` for this project.
+- `appointment_location`: keep `RWTH - Außenstelle Super C` for this project.
 - `applicant_profiles[].name`: a local label for the applicant, such as `applicant`.
 - `applicant_profiles[].env_prefix`: which `.env` prefix to read, usually `APPLICANT`.
-- `applicant_profiles[].target_months`: months the bot is allowed to book, in `YYYY-MM` format.
+- `applicant_profiles[].target_months`: change these to the months you are allowed to book, in `YYYY-MM` format.
 - `check_interval_seconds`: how long to wait between calendar checks.
 - `stop_at_time`: the daily local stop time in `HH:MM` format.
 - `headless`: use `false` while testing so you can see the browser.
@@ -66,15 +66,16 @@ Edit `.env` for private applicant data:
 - `APPLICANT_DATA_PROCESSING_CONSENT=true` if the website requires a consent checkbox
 - `APPLICANT_SECURITY_ANSWER` only if you want to prefill a visible text challenge; leave it empty for manual entry
 
-Optional `.env` notification and phone-control fields:
+Optional notification and phone-control fields:
 
 - `EMAIL_*` and `SMTP_*` for Gmail SMTP booking/heartbeat emails.
-- `TELEGRAM_BOT_TOKEN` for Telegram alerts.
-- `TELEGRAM_CHAT_ID` only if you want fixed recipients; otherwise send `/start` to your bot.
+- For the shared RWTH alert bot, open <https://t.me/GhanneshBot> or search `@GhanneshBot` in Telegram and send `/start`.
+- If you run your own independent copy, create your own bot with `@BotFather` and set `TELEGRAM_BOT_TOKEN` in `.env`; never commit the token.
+- `TELEGRAM_CHAT_ID` is optional for self-hosted bots. Most users can leave it empty and subscribe with `/start`.
 - `CONTROL_TOKEN` for the phone control page.
 - `CONTROL_PAGE_URL` if you want Telegram alerts to include the phone-control link.
 
-Only change source code if the website flow or labels differ:
+Only change source code if the RWTH appointment website flow or labels change:
 
 - `src/monitor.py`: Step 1-4 navigation, location/category selectors, retry loop.
 - `src/slot_checker.py`: calendar parsing, month navigation, slot detection.
@@ -268,15 +269,23 @@ If the laptop bot encounters an error while running, the same phone page shows a
 
 Telegram alerts are optional and are useful because phone browser alerts may pause when the screen is locked. Telegram bots cannot send a message to a phone number directly; each recipient must first open the bot in Telegram and send `/start`.
 
+For this RWTH appointment project, the shared alert bot is `@GhanneshBot`:
+
+1. Open <https://t.me/GhanneshBot> or search `@GhanneshBot` in Telegram.
+2. Send `/start`.
+3. The bot saves that chat as a future alert recipient. Anyone can send `/stop` later to unsubscribe.
+
+If you run a separate private copy instead of using the shared bot, create your own bot:
+
 1. In Telegram, open `@BotFather`.
 2. Create a bot with `/newbot`.
-3. Copy the bot token into `.env`:
+3. Copy that private bot token into `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-bot-token
 ```
 
-4. Open your new bot in Telegram and send it `/start`. The bot saves that chat as a future alert recipient and replies with a subscription confirmation. For multiple recipients, each person sends `/start` to the same bot. Anyone can send `/stop` later to unsubscribe.
+4. Open your new bot in Telegram and send it `/start`. For multiple recipients, each person sends `/start` to the same bot.
 5. Optional: on the laptop, run this command to immediately import pending `/start` messages and show the current subscriber list:
 
 ```powershell
