@@ -9,6 +9,14 @@ from logging import Logger
 
 from playwright.async_api import Page
 
+from src.config_loader import ApplicantProfile, PROJECT_ROOT
+from src.security_state import (
+    clear_security_request,
+    consume_security_answer,
+    create_security_request,
+)
+from src.telegram_notifier import send_telegram_alert
+
 
 FIELD_MAPPINGS = [
     (
@@ -154,10 +162,16 @@ FIELD_MAPPINGS = [
             "sicherheitsantwort",
             "sicherheits antwort",
             "antwort auf die sicherheitsfrage",
+            "sicherheitscode",
+            "pruefcode",
             "prueffrage",
             "kontrollfrage",
+            "captcha",
+            "zeichenfolge",
+            "string",
             "security question",
             "security answer",
+            "security code",
         ),
     ),
     (
@@ -219,20 +233,25 @@ class FormField:
     field_type: str
 
 
-async def fill_personal_details(page: Page, logger: Logger) -> None:
+async def fill_personal_details(
+    page: Page,
+    logger: Logger,
+    applicant_profile: ApplicantProfile | None = None,
+) -> None:
     logger.info("Detecting Step 5 personal detail fields")
     inputs = page.locator("input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select")
     fields = await _detect_fields(inputs, logger)
-    _validate_required_values(fields)
+    _validate_required_values(fields, applicant_profile)
 
-    logger.info("Filling Step 5 personal details from .env")
+    profile_name = applicant_profile.name if applicant_profile else "default"
+    logger.info("Filling Step 5 personal details from .env for applicant profile '%s'", profile_name)
     for field_info in fields:
         if not field_info.env_name:
             continue
-        value = _env_value(field_info.env_name)
+        value = _env_value(field_info.env_name, applicant_profile)
         field = inputs.nth(field_info.index)
         if not value and field_info.env_name == "APPLICANT_SECURITY_ANSWER":
-            await _wait_for_manual_security_answer(field, page, logger)
+            await _wait_for_manual_security_answer(field, page, logger, field_info.label)
             continue
         if not value:
             continue
@@ -245,7 +264,7 @@ async def fill_personal_details(page: Page, logger: Logger) -> None:
             if value.lower() in {"1", "true", "yes", "ja"}:
                 await field.check()
         else:
-            value = await _value_for_field(field, field_info.env_name, value)
+            value = await _value_for_field(field, field_info.env_name, value, applicant_profile)
             await field.fill(value)
         logger.info("Filled field '%s' from %s", field_info.label, field_info.env_name)
 
@@ -270,6 +289,7 @@ async def _detect_fields(inputs, logger: Logger) -> list[FormField]:
             )
         )
 
+    _assign_split_date_fields(fields)
     _log_detected_fields(fields, logger)
     return fields
 
@@ -295,7 +315,7 @@ async def _label_for_field(field) -> str:
                     'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select'
                 );
                 const contextText = context.innerText || context.textContent || '';
-                if (controls.length <= 1 && contextText.length <= 500) labels.push(contextText);
+                if (controls.length <= 4 && contextText.length <= 500) labels.push(contextText);
             }
 
             return labels.filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
@@ -327,6 +347,27 @@ def _env_for_label(label: str, own_hint: str = "") -> str | None:
         if env_name:
             return env_name
     return None
+
+
+def _assign_split_date_fields(fields: list[FormField]) -> None:
+    date_fields = [
+        field
+        for field in fields
+        if field.env_name == "APPLICANT_DATE_OF_BIRTH"
+        and _has_any_phrase(_normalize_label(field.label), DATE_OF_BIRTH_HINTS)
+    ]
+    if len(date_fields) != 3:
+        return
+
+    for field, env_name in zip(
+        date_fields,
+        (
+            "APPLICANT_DATE_OF_BIRTH_DAY",
+            "APPLICANT_DATE_OF_BIRTH_MONTH",
+            "APPLICANT_DATE_OF_BIRTH_YEAR",
+        ),
+    ):
+        field.env_name = env_name
 
 
 def _date_component_env(own: str, label: str) -> str | None:
@@ -395,7 +436,7 @@ async def _is_required(field) -> bool:
                     'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select'
                 );
                 const contextText = context.innerText || context.textContent || '';
-                if (controls.length <= 1 && contextText.length <= 500) parts.push(contextText);
+                if (controls.length <= 4 && contextText.length <= 500) parts.push(contextText);
             }
 
             return parts.join(' ');
@@ -404,7 +445,10 @@ async def _is_required(field) -> bool:
     return required is not None or aria_required == "true" or "*" in label_text
 
 
-def _validate_required_values(fields: list[FormField]) -> None:
+def _validate_required_values(
+    fields: list[FormField],
+    applicant_profile: ApplicantProfile | None = None,
+) -> None:
     missing: list[str] = []
     unmapped: list[str] = []
     for field in fields:
@@ -413,14 +457,16 @@ def _validate_required_values(fields: list[FormField]) -> None:
         if not field.env_name:
             unmapped.append(field.label)
             continue
-        value = _env_value(field.env_name)
+        value = _env_value(field.env_name, applicant_profile)
         if field.env_name == "APPLICANT_SECURITY_ANSWER" and not value:
             continue
         if not value:
-            missing.append(f"{field.label} -> {field.env_name}")
+            missing.append(f"{field.label} -> {_profile_env_name(field.env_name, applicant_profile)}")
             continue
         if field.field_type in {"checkbox", "radio"} and value.lower() not in {"1", "true", "yes", "ja"}:
-            missing.append(f"{field.label} -> {field.env_name} must be true/yes/ja")
+            missing.append(
+                f"{field.label} -> {_profile_env_name(field.env_name, applicant_profile)} must be true/yes/ja"
+            )
 
     errors = []
     if missing:
@@ -467,25 +513,74 @@ def _normalize_label(label: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-async def _wait_for_manual_security_answer(field, page: Page, logger: Logger) -> None:
+async def _wait_for_manual_security_answer(field, page: Page, logger: Logger, label: str) -> None:
     logger.warning(
         "Manual security challenge detected. Type the visible letters/numbers into the focused field; "
-        "the script will wait before continuing."
+        "the script will wait before continuing. You can also submit it from the phone control page."
     )
     await _notify_manual_security_required(page, logger)
+    screenshot = await _save_security_challenge_screenshot(field, logger)
+    challenge_id = create_security_request(label=label, image_path=screenshot)
+    _send_manual_security_telegram_alert(label, screenshot, logger)
+    logger.warning("phone_security_answer_required | challenge_id=%s", challenge_id)
     await field.focus()
     deadline = time.monotonic() + 600
     next_alert_at = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        value = await field.evaluate("el => ('value' in el ? el.value : el.textContent || '').trim()")
-        if value:
-            logger.info("Manual security answer entered; continuing booking flow")
-            return
-        if time.monotonic() >= next_alert_at:
-            _play_manual_security_alert()
-            next_alert_at = time.monotonic() + 10
-        await page.wait_for_timeout(1000)
-    raise ValueError("Timed out waiting for manual security challenge entry")
+    try:
+        while time.monotonic() < deadline:
+            submitted_answer = consume_security_answer(challenge_id)
+            if submitted_answer:
+                await field.fill(submitted_answer)
+                logger.info("Manual security answer received from phone; continuing booking flow")
+                return
+
+            value = await field.evaluate("el => ('value' in el ? el.value : el.textContent || '').trim()")
+            if value:
+                logger.info("Manual security answer entered; continuing booking flow")
+                return
+            if time.monotonic() >= next_alert_at:
+                _play_manual_security_alert()
+                next_alert_at = time.monotonic() + 10
+            await page.wait_for_timeout(1000)
+        raise ValueError("Timed out waiting for manual security challenge entry")
+    finally:
+        clear_security_request(challenge_id)
+
+
+async def _save_security_challenge_screenshot(field, logger: Logger):
+    path = PROJECT_ROOT / "logs" / "security_challenge.png"
+    try:
+        context_handle = await field.evaluate_handle(
+            """el => {
+                const controlsSelector = 'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select';
+                let best = el;
+                for (let node = el; node && node !== document.body; node = node.parentElement) {
+                    const rect = node.getBoundingClientRect();
+                    const controls = node.querySelectorAll(controlsSelector).length;
+                    const text = (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
+                    if (
+                        rect.width >= 80
+                        && rect.height >= 30
+                        && rect.width <= 1200
+                        && rect.height <= 700
+                        && controls <= 4
+                        && text.length <= 1000
+                    ) {
+                        best = node;
+                    }
+                }
+                return best;
+            }"""
+        )
+        element = context_handle.as_element()
+        if element:
+            await element.screenshot(path=str(path))
+        else:
+            await field.screenshot(path=str(path))
+        return path
+    except Exception as exc:
+        logger.warning("Could not save manual security challenge screenshot for phone: %s", exc)
+        return None
 
 
 async def _notify_manual_security_required(page: Page, logger: Logger) -> None:
@@ -497,6 +592,26 @@ async def _notify_manual_security_required(page: Page, logger: Logger) -> None:
         logger.warning("Could not bring browser to front for manual security challenge: %s", exc)
 
     _play_manual_security_alert()
+
+
+def _send_manual_security_telegram_alert(label: str, screenshot_path, logger: Logger) -> None:
+    message = "\n".join(
+        [
+            "The laptop bot found an appointment and is waiting for a manual security/captcha answer.",
+            "",
+            f"Field: {label}",
+            "",
+            "Open the phone control page to enter the answer, or enter it directly in the laptop browser.",
+        ]
+    )
+    if send_telegram_alert(
+        title="Manual security answer required",
+        message=message,
+        severity="manual_action",
+        screenshot_path=screenshot_path,
+        force=True,
+    ):
+        logger.info("Telegram manual security alert sent")
 
 
 async def _restore_browser_window_if_minimized(page: Page, logger: Logger) -> None:
@@ -553,13 +668,18 @@ def _select_value_candidates(value: str) -> list[str]:
     return [value]
 
 
-async def _value_for_field(field, env_name: str | None, value: str) -> str:
+async def _value_for_field(
+    field,
+    env_name: str | None,
+    value: str,
+    applicant_profile: ApplicantProfile | None = None,
+) -> str:
     if env_name in {
         "APPLICANT_DATE_OF_BIRTH_DAY",
         "APPLICANT_DATE_OF_BIRTH_MONTH",
         "APPLICANT_DATE_OF_BIRTH_YEAR",
     }:
-        return _env_value(env_name) or value
+        return _env_value(env_name, applicant_profile) or value
 
     if env_name != "APPLICANT_DATE_OF_BIRTH":
         return value
@@ -594,13 +714,13 @@ def _parse_date(value: str) -> tuple[int, int, int] | None:
     return None
 
 
-def _env_value(env_name: str) -> str:
+def _env_value(env_name: str, applicant_profile: ApplicantProfile | None = None) -> str:
     if env_name in {
         "APPLICANT_DATE_OF_BIRTH_DAY",
         "APPLICANT_DATE_OF_BIRTH_MONTH",
         "APPLICANT_DATE_OF_BIRTH_YEAR",
     }:
-        parsed = _parse_date(os.getenv("APPLICANT_DATE_OF_BIRTH", "").strip())
+        parsed = _parse_date(os.getenv(_profile_env_name("APPLICANT_DATE_OF_BIRTH", applicant_profile), "").strip())
         if not parsed:
             return ""
         day, month, year = parsed
@@ -609,4 +729,12 @@ def _env_value(env_name: str) -> str:
         if env_name == "APPLICANT_DATE_OF_BIRTH_MONTH":
             return f"{month:02d}"
         return f"{year:04d}"
-    return os.getenv(env_name, "").strip()
+    return os.getenv(_profile_env_name(env_name, applicant_profile), "").strip()
+
+
+def _profile_env_name(env_name: str, applicant_profile: ApplicantProfile | None = None) -> str:
+    if applicant_profile is None or applicant_profile.env_prefix == "APPLICANT":
+        return env_name
+    if not env_name.startswith("APPLICANT_"):
+        return env_name
+    return f"{applicant_profile.env_prefix}_{env_name.removeprefix('APPLICANT_')}"

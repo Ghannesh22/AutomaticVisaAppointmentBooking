@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from logging import Logger
 
 from playwright.async_api import Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from src.booker import book_slot
-from src.config_loader import AppConfig
+from src.booker import SlotSelectionUnavailable, book_slot
+from src.config_loader import AppConfig, ApplicantProfile
 from src.email_notifier import send_heartbeat_email
 from src.logger import safe_filename
+from src.manual_challenge import wait_for_manual_captcha_if_present
 from src.page_utils import click_locator_with_retry, wait_for_page_ready
-from src.slot_checker import check_target_slot
+from src.phone_alerts import clear_error_alert, create_error_alert
+from src.slot_checker import SlotCandidate, check_target_slot
 from src.state import has_success_flag, success_flag_path
+from src.telegram_notifier import refresh_telegram_subscribers, send_telegram_alert
 
 
 class FlowRestartRequired(RuntimeError):
@@ -64,16 +68,16 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
     stats = MonitoringStats(current_wait_seconds=config.check_interval_seconds)
     last_heartbeat_sent = datetime.now()
 
-    if has_success_flag():
-        stats.state = "success_flag_present"
+    if _all_profiles_completed(config):
+        stats.state = "all_success_flags_present"
         logger.warning(
-            "Success flag exists at %s; stopping before monitoring to prevent duplicate booking",
-            success_flag_path(),
+            "Success flags exist for all applicant profiles; stopping before monitoring to prevent duplicate booking",
         )
         logger.info(stats.summary())
         return True
 
-    deadline = datetime.now() + timedelta(minutes=config.max_runtime_minutes)
+    deadline = _daily_cutoff_deadline(config.stop_at_time)
+    logger.info("Daily stop time: %s", deadline.isoformat(timespec="minutes"))
     attempt = 1
     failure_count = 0
     base_backoff_seconds = min(60, max(5, config.check_interval_seconds // 4))
@@ -81,11 +85,11 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
 
     try:
         while datetime.now() < deadline:
-            if has_success_flag():
-                stats.state = "success_flag_present"
+            refresh_telegram_subscribers(logger=logger)
+            if _all_profiles_completed(config):
+                stats.state = "all_success_flags_present"
                 logger.warning(
-                    "Success flag exists at %s; stopping monitor to prevent duplicate booking",
-                    success_flag_path(),
+                    "Success flags exist for all applicant profiles; stopping monitor to prevent duplicate booking",
                 )
                 return True
 
@@ -102,25 +106,29 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                 stats.last_successful_calendar_load = datetime.now()
                 if failure_count:
                     logger.info("Page load succeeded; resetting failure backoff")
+                    clear_error_alert()
                 failure_count = 0
                 stats.current_retry_count = 0
                 stats.current_wait_seconds = config.check_interval_seconds
 
                 while datetime.now() < deadline:
-                    if has_success_flag():
-                        stats.state = "success_flag_present"
+                    refresh_telegram_subscribers(logger=logger)
+                    completed_profiles = _completed_profile_names(config)
+                    if len(completed_profiles) == len(config.applicant_profiles):
+                        stats.state = "all_success_flags_present"
                         logger.warning(
-                            "Success flag exists at %s; stopping monitor to prevent duplicate booking",
-                            success_flag_path(),
+                            "Success flags exist for all applicant profiles; stopping monitor to prevent duplicate booking",
                         )
                         return True
+                    active_target_months = config.target_months_for_open_profiles(completed_profiles)
 
                     stats.state = "checking_calendar"
+                    await wait_for_manual_captcha_if_present(page, logger, "calendar monitoring")
                     await _ensure_calendar_page(page)
                     stats.last_successful_calendar_load = datetime.now()
-                    result = await check_target_slot(page, config, logger)
+                    result = await check_target_slot(page, config, logger, active_target_months)
                     stats.total_checks += 1
-                    _record_open_month_observations(stats, result.month_observations, config, logger)
+                    _record_open_month_observations(stats, result.month_observations, active_target_months, logger)
                     logger.info(
                         "monitor_state | state=%s | checks=%s | result=%s | retry_count=%s | wait_seconds=%s",
                         stats.state,
@@ -134,15 +142,77 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                         last_heartbeat_sent = datetime.now()
 
                     if result.slot:
+                        applicant_profile = config.profile_for_month(result.slot.date_text[:7])
+                        if has_success_flag(applicant_profile.name):
+                            logger.warning(
+                                "Slot matched already-booked applicant profile '%s' at %s; continuing monitor",
+                                applicant_profile.name,
+                                success_flag_path(applicant_profile.name),
+                            )
+                            await page.reload(wait_until="domcontentloaded")
+                            await wait_for_page_ready(page, logger, "calendar reload after completed profile slot")
+                            continue
                         stats.state = "slot_detected"
                         logger.info(
-                            "slot_detection_result | valid target-month slot detected | target_months=%s",
-                            ",".join(config.target_months),
+                            "slot_detection_result | valid target-month slot detected | applicant_profile=%s | target_months=%s",
+                            applicant_profile.name,
+                            ",".join(applicant_profile.target_months),
                         )
-                        success = await book_slot(page, config, result.slot, logger)
+                        slot_screenshot = await _save_slot_found_screenshot(page, logger)
+                        _send_slot_found_telegram_alert(
+                            config,
+                            applicant_profile,
+                            result.slot,
+                            page.url,
+                            slot_screenshot,
+                            logger,
+                        )
+                        try:
+                            success = await book_slot(page, config, result.slot, logger, applicant_profile)
+                        except SlotSelectionUnavailable as exc:
+                            stats.total_failures += 1
+                            saved_screenshot = await _save_error_screenshot(
+                                page,
+                                logger,
+                                f"Slot selection failed: {exc}",
+                            )
+                            logger.warning(
+                                "slot_selection_unavailable | %s | screenshot=%s | continuing monitor",
+                                exc,
+                                saved_screenshot or "unavailable",
+                            )
+                            create_error_alert(
+                                title="Bot could not select a detected slot",
+                                message=str(exc),
+                                severity="recoverable",
+                                screenshot_path=saved_screenshot,
+                            )
+                            if send_telegram_alert(
+                                title="Bot could not select a detected slot",
+                                message=str(exc),
+                                severity="recoverable",
+                                screenshot_path=saved_screenshot,
+                            ):
+                                logger.info("Telegram slot-selection error alert sent")
+                            stats.state = "waiting"
+                            await page.reload(wait_until="domcontentloaded")
+                            await wait_for_page_ready(page, logger, "calendar reload after unavailable slot")
+                            continue
                         if success:
                             stats.state = "booking_submitted"
-                            return True
+                            completed_profiles = _completed_profile_names(config)
+                            if len(completed_profiles) == len(config.applicant_profiles):
+                                return True
+                            logger.info(
+                                "Booking completed for applicant profile '%s'; continuing monitor for remaining profiles: %s",
+                                applicant_profile.name,
+                                ", ".join(
+                                    profile.name
+                                    for profile in config.applicant_profiles
+                                    if profile.name not in completed_profiles
+                                ),
+                            )
+                            break
                         stats.state = "dry_run_complete"
                         logger.info("Dry-run reached booking boundary; stopping monitor")
                         return False
@@ -154,28 +224,41 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                         "monitor_state | state=waiting | wait_seconds=%s | next_action=reload_calendar",
                         stats.current_wait_seconds,
                     )
-                    await asyncio.sleep(config.check_interval_seconds)
+                    if not await _sleep_before_next_action(config.check_interval_seconds, deadline):
+                        break
                     await page.reload(wait_until="domcontentloaded")
                     await wait_for_page_ready(page, logger, "calendar reload")
             except ValueError as exc:
                 stats.state = "fatal_error"
                 stats.total_failures += 1
-                screenshot = safe_filename("error")
-                try:
-                    await page.screenshot(path=str(screenshot), full_page=True)
-                    logger.error("Configuration or form-fill error: %s. Saved screenshot: %s", exc, screenshot)
-                except Exception:
-                    logger.error("Configuration or form-fill error before screenshot could be saved: %s", exc)
+                saved_screenshot = await _save_error_screenshot(
+                    page,
+                    logger,
+                    f"Configuration or form-fill error: {exc}",
+                )
+                create_error_alert(
+                    title="Bot stopped because of an error",
+                    message=str(exc),
+                    severity="fatal",
+                    screenshot_path=saved_screenshot,
+                )
+                if send_telegram_alert(
+                    title="Bot stopped because of an error",
+                    message=str(exc),
+                    severity="fatal",
+                    screenshot_path=saved_screenshot,
+                    force=True,
+                ):
+                    logger.info("Telegram fatal error alert sent")
                 return False
             except (FlowRestartRequired, PlaywrightTimeoutError, PlaywrightError) as exc:
                 stats.state = "navigation_failure"
                 stats.total_failures += 1
-                screenshot = safe_filename("error")
-                try:
-                    await page.screenshot(path=str(screenshot), full_page=True)
-                    logger.error("Flow failed: %s. Saved screenshot: %s", exc, screenshot)
-                except Exception:
-                    logger.error("Flow failed before screenshot could be saved: %s", exc)
+                saved_screenshot = await _save_error_screenshot(
+                    page,
+                    logger,
+                    f"Flow failed: {exc}",
+                )
                 attempt += 1
                 failure_count += 1
                 stats.current_retry_count = failure_count
@@ -195,13 +278,56 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                     failure_count,
                     backoff_seconds,
                 )
+                create_error_alert(
+                    title="Bot hit an error and is retrying",
+                    message=str(exc).splitlines()[0][:500],
+                    severity="recoverable",
+                    screenshot_path=saved_screenshot,
+                    retry_count=failure_count,
+                    next_wait_seconds=backoff_seconds,
+                )
+                if send_telegram_alert(
+                    title="Bot hit an error and is retrying",
+                    message=(
+                        f"{str(exc).splitlines()[0][:500]}\n\n"
+                        f"Retry count: {failure_count}\n"
+                        f"Next retry wait: {backoff_seconds} seconds"
+                    ),
+                    severity="recoverable",
+                    screenshot_path=saved_screenshot,
+                ):
+                    logger.info("Telegram recoverable error alert sent")
                 if await _maybe_send_heartbeat(config, stats, logger, last_heartbeat_sent):
                     last_heartbeat_sent = datetime.now()
-                await asyncio.sleep(backoff_seconds)
+                if not await _sleep_before_next_action(backoff_seconds, deadline):
+                    break
                 continue
+            except Exception as exc:
+                stats.state = "fatal_error"
+                stats.total_failures += 1
+                saved_screenshot = await _save_error_screenshot(
+                    page,
+                    logger,
+                    f"Unexpected monitor error: {exc}",
+                )
+                create_error_alert(
+                    title="Bot stopped because of an unexpected error",
+                    message=str(exc),
+                    severity="fatal",
+                    screenshot_path=saved_screenshot,
+                )
+                if send_telegram_alert(
+                    title="Bot stopped because of an unexpected error",
+                    message=str(exc),
+                    severity="fatal",
+                    screenshot_path=saved_screenshot,
+                    force=True,
+                ):
+                    logger.info("Telegram unexpected error alert sent")
+                return False
 
-        stats.state = "max_runtime_reached"
-        logger.info("Max runtime reached without a successful booking")
+        stats.state = "daily_stop_time_reached"
+        logger.info("Daily stop time reached without a successful booking")
         return False
     except asyncio.CancelledError:
         stats.state = "cancelled"
@@ -381,16 +507,107 @@ async def _maybe_send_heartbeat(
         return False
 
 
+async def _save_error_screenshot(page: Page, logger: Logger, message: str):
+    screenshot = safe_filename("error")
+    try:
+        await page.screenshot(path=str(screenshot), full_page=True)
+    except Exception as exc:
+        logger.error("%s before screenshot could be saved: %s", message, exc)
+        return None
+
+    logger.error("%s. Saved screenshot: %s", message, screenshot)
+    return screenshot
+
+
+async def _save_slot_found_screenshot(page: Page, logger: Logger):
+    screenshot = safe_filename("slot_found")
+    try:
+        await page.screenshot(path=str(screenshot), full_page=True)
+    except Exception as exc:
+        logger.warning("Slot detected before screenshot could be saved: %s", exc)
+        return None
+
+    logger.info("Saved slot-detected screenshot: %s", screenshot)
+    return screenshot
+
+
+def _send_slot_found_telegram_alert(
+    config: AppConfig,
+    applicant_profile: ApplicantProfile,
+    slot: SlotCandidate,
+    session_url: str,
+    screenshot_path,
+    logger: Logger,
+) -> None:
+    fresh_start_url = config.website_url.strip()
+    session_url = session_url.strip()
+    control_page_url = os.getenv("CONTROL_PAGE_URL", "").strip()
+    detected_at = datetime.now().isoformat(timespec="seconds")
+    lines = [
+        "Slot detected now.",
+        "",
+        "Important: the Step 4 calendar URL is tied to the laptop browser session. "
+        "Opening it from Telegram or another browser can show 'No valid location found'.",
+        "",
+        "Use the already-open laptop browser or remote desktop to click the slot, or let the bot continue.",
+        f"Fresh website start URL: {fresh_start_url}",
+    ]
+    if control_page_url:
+        lines.append(f"Phone control page: {control_page_url}")
+    if session_url and session_url.rstrip("/") != fresh_start_url.rstrip("/"):
+        lines.append(f"Laptop session URL when detected: {session_url}")
+    lines.extend(
+        [
+            "",
+            f"Detected at: {detected_at}",
+            f"Slot date: {slot.date_text}",
+            f"Slot time: {slot.time_text}",
+            f"Location: {config.appointment_location}",
+            f"Applicant profile: {applicant_profile.name}",
+            f"Target months: {', '.join(applicant_profile.target_months)}",
+            f"Dry run: {str(config.dry_run).lower()}",
+            "",
+            f"Visible slot text: {slot.raw_text[:500]}",
+        ]
+    )
+    message = "\n".join(lines)
+    if send_telegram_alert(
+        title="Appointment slot found",
+        message=message,
+        severity="urgent",
+        screenshot_path=screenshot_path,
+        force=True,
+    ):
+        logger.info("Telegram slot-found alert sent")
+
+
 def _heartbeat_due(config: AppConfig, last_heartbeat_sent: datetime) -> bool:
     return datetime.now() - last_heartbeat_sent >= timedelta(
         minutes=config.heartbeat_interval_minutes
     )
 
 
+def _daily_cutoff_deadline(stop_at_time: time) -> datetime:
+    now = datetime.now()
+    return datetime.combine(now.date(), stop_at_time)
+
+
+def _seconds_until(deadline: datetime) -> float:
+    return max(0.0, (deadline - datetime.now()).total_seconds())
+
+
+async def _sleep_before_next_action(wait_seconds: int, deadline: datetime) -> bool:
+    remaining_seconds = _seconds_until(deadline)
+    if remaining_seconds <= 0:
+        return False
+    await asyncio.sleep(min(wait_seconds, remaining_seconds))
+    return datetime.now() < deadline
+
+
 def _record_open_month_observations(
     stats: MonitoringStats,
     observations: list | None,
-    config: AppConfig,
+    active_target_months: tuple[str, ...],
     logger: Logger,
 ) -> None:
     for observation in observations or []:
@@ -402,6 +619,18 @@ def _record_open_month_observations(
             logger.info(
                 "non_target_slot_month_seen | month=%s | booking_restricted_to=%s | detail='%s'",
                 observation.month,
-                ",".join(config.target_months),
+                ",".join(active_target_months),
                 observation.detail or "",
             )
+
+
+def _completed_profile_names(config: AppConfig) -> set[str]:
+    return {
+        profile.name
+        for profile in config.applicant_profiles
+        if has_success_flag(profile.name)
+    }
+
+
+def _all_profiles_completed(config: AppConfig) -> bool:
+    return len(_completed_profile_names(config)) == len(config.applicant_profiles)
