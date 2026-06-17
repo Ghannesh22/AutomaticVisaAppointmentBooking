@@ -224,8 +224,17 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                         "monitor_state | state=waiting | wait_seconds=%s | next_action=reload_calendar",
                         stats.current_wait_seconds,
                     )
-                    if not await _sleep_before_next_action(config.check_interval_seconds, deadline):
+                    next_action = await _sleep_before_calendar_reload(
+                        config.check_interval_seconds,
+                        deadline,
+                        page,
+                        logger,
+                    )
+                    if next_action == "stop":
                         break
+                    if next_action == "manual_action":
+                        logger.info("Manual CAPTCHA handled during wait; checking calendar without reload")
+                        continue
                     await page.reload(wait_until="domcontentloaded")
                     await wait_for_page_ready(page, logger, "calendar reload")
             except ValueError as exc:
@@ -602,6 +611,23 @@ async def _sleep_before_next_action(wait_seconds: int, deadline: datetime) -> bo
         return False
     await asyncio.sleep(min(wait_seconds, remaining_seconds))
     return datetime.now() < deadline
+
+
+async def _sleep_before_calendar_reload(
+    wait_seconds: int,
+    deadline: datetime,
+    page: Page,
+    logger: Logger,
+) -> str:
+    end_at = min(deadline, datetime.now() + timedelta(seconds=wait_seconds))
+    while datetime.now() < end_at:
+        if await wait_for_manual_captcha_if_present(page, logger, "calendar wait before reload"):
+            return "manual_action"
+        remaining_seconds = _seconds_until(end_at)
+        if remaining_seconds <= 0:
+            break
+        await asyncio.sleep(min(1.0, remaining_seconds))
+    return "reload" if datetime.now() < deadline else "stop"
 
 
 def _record_open_month_observations(

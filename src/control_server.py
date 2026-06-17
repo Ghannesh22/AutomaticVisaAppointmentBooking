@@ -657,7 +657,7 @@ def _manual_action_panel_html() -> str:
       <div class="meta">Detected: {html.escape(created_at)}</div>
       <p>{html.escape(message)}</p>
       {image_html}
-      <p>Open Chrome Remote Desktop or another remote desktop app on your phone, control the laptop browser, and complete this manually. The bot will continue automatically after the challenge clears.</p>
+      <p>Open Chrome Remote Desktop or another remote desktop app on your phone, control the laptop browser, complete this manually, then press Enter in the browser so the bot continues.</p>
       <script>
         (function () {{
           var requestId = "{html.escape(request_id)}";

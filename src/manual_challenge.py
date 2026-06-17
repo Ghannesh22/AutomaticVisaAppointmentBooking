@@ -17,13 +17,17 @@ from src.telegram_notifier import send_telegram_alert
 MANUAL_CHALLENGE_TIMEOUT_SECONDS = 900
 
 
-async def wait_for_manual_captcha_if_present(page: Page, logger: Logger, context: str) -> None:
+async def wait_for_manual_captcha_if_present(page: Page, logger: Logger, context: str) -> bool:
+    await _install_manual_captcha_enter_listener(page)
     if not await _manual_captcha_visible(page):
-        return
+        if await _manual_captcha_enter_pressed(page):
+            logger.info("Manual CAPTCHA completion confirmed by Enter key during %s", context)
+            return True
+        return False
 
     logger.warning(
         "Manual CAPTCHA challenge detected during %s. Complete it manually in the laptop browser; "
-        "the bot will wait and continue after it is cleared.",
+        "then press Enter in the browser to let the bot continue.",
         context,
     )
     screenshot = await _save_manual_action_screenshot(page, logger)
@@ -32,7 +36,7 @@ async def wait_for_manual_captcha_if_present(page: Page, logger: Logger, context
         message=(
             "The laptop browser is waiting on an 'I am not a robot' challenge. "
             "Open Chrome Remote Desktop or another remote desktop app on your phone, control the laptop browser, "
-            "complete the challenge manually, and the bot will continue."
+            "complete the challenge manually, then press Enter in the browser to let the bot continue."
         ),
         image_path=screenshot,
     )
@@ -41,7 +45,7 @@ async def wait_for_manual_captcha_if_present(page: Page, logger: Logger, context
         message=(
             "The laptop bot is waiting on an 'I am not a robot' challenge. "
             "Open Chrome Remote Desktop or another remote desktop app on your phone, control the laptop browser, "
-            "and complete it manually. The bot will continue after it clears."
+            "complete it manually, then press Enter in the browser to let the bot continue."
         ),
         severity="manual_action",
         screenshot_path=screenshot,
@@ -51,13 +55,52 @@ async def wait_for_manual_captcha_if_present(page: Page, logger: Logger, context
     deadline = time.monotonic() + MANUAL_CHALLENGE_TIMEOUT_SECONDS
     try:
         while time.monotonic() < deadline:
+            if await _manual_captcha_enter_pressed(page):
+                logger.info("Manual CAPTCHA completion confirmed by Enter key; continuing booking flow")
+                await page.wait_for_timeout(500)
+                return True
             if not await _manual_captcha_visible(page):
                 logger.info("Manual CAPTCHA challenge cleared; continuing booking flow")
-                return
+                return True
             await page.wait_for_timeout(1000)
         raise ValueError("Timed out waiting for manual CAPTCHA challenge completion")
     finally:
         clear_manual_action_request(request_id)
+
+
+async def _install_manual_captcha_enter_listener(page: Page) -> None:
+    try:
+        await page.evaluate(
+            """() => {
+                if (window.__visaBotManualCaptchaEnterListenerInstalled) {
+                    return;
+                }
+                window.__visaBotManualCaptchaEnterListenerInstalled = true;
+                window.__visaBotManualCaptchaEnterPressed = false;
+                document.addEventListener("keydown", event => {
+                    if (event.key === "Enter") {
+                        window.__visaBotManualCaptchaEnterPressed = true;
+                    }
+                }, true);
+            }"""
+        )
+    except Exception:
+        return
+
+
+async def _manual_captcha_enter_pressed(page: Page) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                    const pressed = Boolean(window.__visaBotManualCaptchaEnterPressed);
+                    window.__visaBotManualCaptchaEnterPressed = false;
+                    return pressed;
+                }"""
+            )
+        )
+    except Exception:
+        return False
 
 
 async def _manual_captcha_visible(page: Page) -> bool:

@@ -6,7 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.config_loader import AppConfig, ApplicantProfile
-from src.monitor import _save_error_screenshot, _save_slot_found_screenshot, _send_slot_found_telegram_alert
+from src.monitor import (
+    _save_error_screenshot,
+    _save_slot_found_screenshot,
+    _send_slot_found_telegram_alert,
+    _sleep_before_calendar_reload,
+)
 from src.slot_checker import SlotCandidate
 
 
@@ -186,6 +191,30 @@ class SlotFoundTelegramAlertTests(unittest.TestCase):
             "Laptop session URL when detected: https://example.test/session-calendar",
             send_alert.call_args.kwargs["message"],
         )
+
+
+class CalendarReloadWaitTests(unittest.TestCase):
+    def test_sleep_before_calendar_reload_returns_manual_action_when_captcha_handled(self):
+        from datetime import datetime, timedelta
+        from unittest.mock import AsyncMock
+
+        logger = logging.getLogger("test_monitor_calendar_reload_wait")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+
+        with patch("src.monitor.wait_for_manual_captcha_if_present", new_callable=AsyncMock) as wait_for_captcha:
+            wait_for_captcha.return_value = True
+
+            action = asyncio.run(
+                _sleep_before_calendar_reload(
+                    10,
+                    datetime.now() + timedelta(seconds=30),
+                    object(),
+                    logger,
+                )
+            )
+
+        self.assertEqual(action, "manual_action")
 
 
 if __name__ == "__main__":

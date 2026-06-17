@@ -208,7 +208,7 @@ CONTROL_PAGE_URL=http://100.x.y.z:8765
 
 If an appointment is found and the website asks for the manual security answer, booking remains on the laptop but the phone page shows an **Action Required** panel. It includes a cropped screenshot of the security challenge and an answer box. Submit the answer from the phone and the laptop bot fills it into the browser and continues. Keep the phone control page open if you want the browser sound/vibration alert when the challenge appears; closed mobile browsers cannot receive local web-page push alerts. Some mobile browsers require you to interact with the page once before they allow sound.
 
-If the manual challenge is an **I am not a robot** CAPTCHA, the bot does not solve or click it. The phone page shows a **Manual Browser Action** panel with a screenshot and sound/vibration alerts, then the laptop bot pauses. Complete the CAPTCHA manually in the laptop browser, for example through Chrome Remote Desktop, AnyDesk, Windows Remote Desktop over Tailscale, or by being at the laptop. Once the challenge is cleared, the bot continues automatically.
+If the manual challenge is an **I am not a robot** CAPTCHA, the bot does not solve or click it. The phone page shows a **Manual Browser Action** panel with a screenshot and sound/vibration alerts, then the laptop bot pauses. Complete the CAPTCHA manually in the laptop browser, for example through Chrome Remote Desktop, AnyDesk, Windows Remote Desktop over Tailscale, or by being at the laptop. After you finish the CAPTCHA, press Enter in the browser to let the bot continue.
 
 For outside-home CAPTCHA handling, the recommended setup is Chrome Remote Desktop:
 
@@ -217,7 +217,7 @@ For outside-home CAPTCHA handling, the recommended setup is Chrome Remote Deskto
 3. Confirm you can open and control the laptop from your phone before relying on the bot.
 4. When Telegram or the phone page says **Manual CAPTCHA required**, open Chrome Remote Desktop on the phone.
 5. Tap the CAPTCHA in the laptop browser remotely.
-6. Return to the phone control page or Telegram; the bot continues after the challenge clears.
+6. Press Enter in the laptop browser after the challenge is complete, then return to the phone control page or Telegram.
 
 If the laptop bot encounters an error while running, the same phone page shows a **Bot Alert** panel with the error summary, retry details when the bot is recovering, and an error screenshot link when available. The full details are still written on the laptop in `logs/monitor.log` and `logs/bot_process.log`.
 
@@ -396,7 +396,7 @@ For a second profile configured with `env_prefix: "APPLICANT_2"`, use the same f
 
 Leave `APPLICANT_SECURITY_ANSWER` empty when a visible text security challenge must be entered manually. When the script reaches that field, it restores the visible browser window if it was minimized, brings the tab to the front, focuses the field, plays an alert sound immediately, and repeats the sound every 10 seconds until an answer is entered. If the bot was started from the phone control page, the same manual text challenge can also be answered from the phone.
 
-For checkbox-style CAPTCHA challenges such as **I am not a robot**, the phone page can alert you and show a screenshot, but you must complete the CAPTCHA manually in the laptop browser. This project does not bypass CAPTCHA or automate anti-bot checks.
+For checkbox-style CAPTCHA challenges such as **I am not a robot**, the phone page can alert you and show a screenshot, but you must complete the CAPTCHA manually in the laptop browser and press Enter afterward so the bot knows it can continue. This project does not bypass CAPTCHA or automate anti-bot checks.
 
 Field detection uses German synonym groups, so labels such as `Geburtsdatum`, `Datum der Geburt`, or split `Tag` / `Monat` / `Jahr` date fields map to the same birth-date value. The same approach is used for names, email, telephone, remarks, security question, consent, nationality, passport number, and gender.
 
