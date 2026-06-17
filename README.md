@@ -40,6 +40,50 @@ If your Windows machine uses the Python launcher, `py` can be used instead of `p
 Edit `.env` with your applicant details and optional Gmail SMTP values. For Gmail, use an app password, not your normal account password.
 Leave the SMTP settings empty to disable project email notifications; the official appointment email will still go to `APPLICANT_EMAIL`.
 
+## What You Must Customize
+
+Most users should not put personal information directly in Python code. Keep private values in `.env`, which is ignored by Git, and keep public behavior settings in `config.yaml`.
+
+Edit `config.yaml` for appointment behavior:
+
+- `website_url`: the appointment website start page.
+- `visa_category`: the category/service name the bot should increment to one applicant.
+- `appointment_location`: the location/office text the bot should select.
+- `applicant_profiles[].name`: a local label for the applicant, such as `applicant`.
+- `applicant_profiles[].env_prefix`: which `.env` prefix to read, usually `APPLICANT`.
+- `applicant_profiles[].target_months`: months the bot is allowed to book, in `YYYY-MM` format.
+- `check_interval_seconds`: how long to wait between calendar checks.
+- `stop_at_time`: the daily local stop time in `HH:MM` format.
+- `headless`: use `false` while testing so you can see the browser.
+- `dry_run`: keep `true` until you have verified the whole flow; set `false` only for real booking.
+
+Edit `.env` for private applicant data:
+
+- `APPLICANT_FIRST_NAME`, `APPLICANT_LAST_NAME`
+- `APPLICANT_EMAIL`, `APPLICANT_PHONE`
+- `APPLICANT_DATE_OF_BIRTH`
+- `APPLICANT_NATIONALITY`, `APPLICANT_PASSPORT_NUMBER`, `APPLICANT_GENDER`
+- `APPLICANT_DATA_PROCESSING_CONSENT=true` if the website requires a consent checkbox
+- `APPLICANT_SECURITY_ANSWER` only if you want to prefill a visible text challenge; leave it empty for manual entry
+
+Optional `.env` notification and phone-control fields:
+
+- `EMAIL_*` and `SMTP_*` for Gmail SMTP booking/heartbeat emails.
+- `TELEGRAM_BOT_TOKEN` for Telegram alerts.
+- `TELEGRAM_CHAT_ID` only if you want fixed recipients; otherwise send `/start` to your bot.
+- `CONTROL_TOKEN` for the phone control page.
+- `CONTROL_PAGE_URL` if you want Telegram alerts to include the phone-control link.
+
+Only change source code if the website flow or labels differ:
+
+- `src/monitor.py`: Step 1-4 navigation, location/category selectors, retry loop.
+- `src/slot_checker.py`: calendar parsing, month navigation, slot detection.
+- `src/booker.py`: appointment time selection and final booking submission.
+- `src/form_filler.py`: Step 5 field-label mapping to `.env` variables.
+- `src/control_server.py`: local phone dashboard behavior.
+
+After changing source code, run `python -m pytest` before using real booking mode.
+
 ## Always-On VPS Setup
 
 Use a small Ubuntu VPS so monitoring continues when your laptop is off. Create `.env` directly on the VPS; do not commit personal details, tokens, logs, screenshots, or confirmation files.
