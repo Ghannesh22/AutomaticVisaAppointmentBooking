@@ -79,7 +79,7 @@ class SlotFoundTelegramAlertTests(unittest.TestCase):
         logger = logging.getLogger("test_monitor_slot_found")
         logger.handlers = [logging.NullHandler()]
         logger.propagate = False
-        profile = ApplicantProfile("jessico", ("2026-07", "2026-08"), "APPLICANT")
+        profile = ApplicantProfile("applicant_a", ("2026-07", "2026-08"), "APPLICANT")
 
         with patch("src.monitor.send_telegram_alert", return_value=True) as send_alert:
             _send_slot_found_telegram_alert(
@@ -107,7 +107,7 @@ class SlotFoundTelegramAlertTests(unittest.TestCase):
         self.assertIn("Detected at:", kwargs["message"])
         self.assertIn("Slot date: 2026-08-19", kwargs["message"])
         self.assertIn("Slot time: 08:30", kwargs["message"])
-        self.assertIn("Applicant profile: jessico", kwargs["message"])
+        self.assertIn("Applicant profile: applicant_a", kwargs["message"])
         self.assertIn("Target months: 2026-07, 2026-08", kwargs["message"])
         self.assertIn("Dry run: false", kwargs["message"])
 
@@ -134,7 +134,7 @@ class SlotFoundTelegramAlertTests(unittest.TestCase):
         logger = logging.getLogger("test_monitor_slot_found_fallback")
         logger.handlers = [logging.NullHandler()]
         logger.propagate = False
-        profile = ApplicantProfile("jessico", ("2026-07",), "APPLICANT")
+        profile = ApplicantProfile("applicant_a", ("2026-07",), "APPLICANT")
 
         with (
             patch.dict("os.environ", {"CONTROL_PAGE_URL": "http://100.64.0.1:8765"}),
@@ -175,7 +175,7 @@ class SlotFoundTelegramAlertTests(unittest.TestCase):
         logger = logging.getLogger("test_monitor_slot_found_session_url")
         logger.handlers = [logging.NullHandler()]
         logger.propagate = False
-        profile = ApplicantProfile("jessico", ("2026-07",), "APPLICANT")
+        profile = ApplicantProfile("applicant_a", ("2026-07",), "APPLICANT")
 
         with patch("src.monitor.send_telegram_alert", return_value=True) as send_alert:
             _send_slot_found_telegram_alert(

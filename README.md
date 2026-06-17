@@ -1,13 +1,17 @@
 # Automatic Visa Appointment Booking
 
-Small Windows-friendly Python project for monitoring the StädteRegion Aachen appointment website and booking configured profile-specific appointment months for:
+Python + Playwright automation for monitoring the StädteRegion Aachen appointment website and booking a configured appointment when a matching slot appears.
+
+The project is written for this appointment flow:
 
 - Function unit: `Ausländer- und Staatsangehörigkeitsbehörde`
 - Location: `RWTH - Außenstelle Super C`
 - Category: `RWTH Studenten`
 - Website: <https://termine.staedteregion-aachen.de/auslaenderamt/>
 
-The checked-in config starts in visible browser mode with `dry_run: false` for real monitoring. Set `dry_run: true` before a validation run; dry-run mode navigates the booking flow and stops before the final booking submission.
+The checked-in config starts in visible browser mode with `dry_run: true`. Dry-run mode navigates the booking flow and stops before final submission, which is the safe default for new users. Switch to `dry_run: false` only after you have verified the flow with your own applicant details.
+
+This repository is meant to be adapted by the person running it. Change the appointment URL, category, location, target months, and applicant fields before relying on it. The project is not affiliated with StädteRegion Aachen and does not bypass CAPTCHA, queues, logins, rate limits, or anti-bot systems.
 
 ## Safety
 
@@ -33,12 +37,12 @@ Copy-Item .env.example .env
 
 If your Windows machine uses the Python launcher, `py` can be used instead of `python`.
 
-Edit `.env` with applicant details and Gmail SMTP values. For Gmail, use an app password, not your normal account password.
+Edit `.env` with your applicant details and optional Gmail SMTP values. For Gmail, use an app password, not your normal account password.
 Leave the SMTP settings empty to disable project email notifications; the official appointment email will still go to `APPLICANT_EMAIL`.
 
 ## Always-On VPS Setup
 
-Use a small Ubuntu VPS so monitoring continues when your laptop is off. Keep the GitHub repo private and create `.env` directly on the VPS; do not commit personal details.
+Use a small Ubuntu VPS so monitoring continues when your laptop is off. Create `.env` directly on the VPS; do not commit personal details, tokens, logs, screenshots, or confirmation files.
 
 On the VPS:
 
@@ -50,10 +54,10 @@ sudo mkdir -p /opt/visa-monitor
 sudo chown visa-monitor:visa-monitor /opt/visa-monitor
 ```
 
-Clone the private repo using your GitHub authentication method, then install dependencies:
+Clone your fork or copy of the repository, then install dependencies:
 
 ```bash
-sudo -u visa-monitor git clone https://github.com/Ghannesh22/AutomaticVisaAppointmentBooking.git /opt/visa-monitor/AutomaticVisaAppointmentBooking
+sudo -u visa-monitor git clone <your-repository-url> /opt/visa-monitor/AutomaticVisaAppointmentBooking
 cd /opt/visa-monitor/AutomaticVisaAppointmentBooking
 sudo -u visa-monitor python3 -m venv .venv
 sudo -u visa-monitor .venv/bin/python -m pip install -r requirements.txt
@@ -67,7 +71,7 @@ Create the private `.env` file on the VPS:
 sudo -u visa-monitor nano /opt/visa-monitor/AutomaticVisaAppointmentBooking/.env
 ```
 
-For VPS monitoring, edit `config.yaml`:
+For VPS monitoring, edit `config.yaml` after one local validation run:
 
 ```yaml
 headless: true
@@ -119,20 +123,15 @@ website_url: "https://termine.staedteregion-aachen.de/auslaenderamt/"
 visa_category: "RWTH Studenten"
 appointment_location: "RWTH - Außenstelle Super C"
 applicant_profiles:
-  - name: "jessico"
+  - name: "applicant"
     env_prefix: "APPLICANT"
-    target_months:
-      - "2026-07"
-      - "2026-08"
-  - name: "sammed"
-    env_prefix: "APPLICANT_2"
     target_months:
       - "2026-09"
       - "2026-10"
 check_interval_seconds: 10
 stop_at_time: "17:00"
 headless: false
-dry_run: false
+dry_run: true
 browser_timeout_seconds: 30
 heartbeat_enabled: false
 heartbeat_interval_minutes: 240
@@ -152,7 +151,7 @@ dry_run: false
 
 Only use real booking mode after confirming the dry-run reaches the final overview page correctly.
 
-With `applicant_profiles`, each detected slot is routed by month. In the example above, July/August slots fill from `APPLICANT_*` values and September/October slots fill from `APPLICANT_2_*` values. Success flags are profile-specific, so one successful booking does not block the other profile.
+With `applicant_profiles`, each detected slot is routed by month. In the example above, September/October slots fill from `APPLICANT_*` values. Success flags are profile-specific, so a previous booking for another profile does not block the active profile.
 
 ## Run
 
@@ -375,7 +374,7 @@ If SMTP settings are empty, SMTP is treated as disabled and the test command exi
 
 ## Applicant Fields
 
-The Step 5 form can only be inspected after a slot is selected. When the script reaches Step 5, it logs detected visible form labels to `logs/monitor.log` as `step5_fields_detected` and maps known labels to these `.env` variables:
+The Step 5 form can only be inspected after a slot is selected. When the script reaches Step 5, it logs detected visible form labels to `logs/monitor.log` as `step5_fields_detected` and maps known labels to these base `.env` variables:
 
 - `APPLICANT_FIRST_NAME`
 - `APPLICANT_LAST_NAME`
@@ -390,9 +389,9 @@ The Step 5 form can only be inspected after a slot is selected. When the script 
 - `APPLICANT_PASSPORT_NUMBER`
 - `APPLICANT_GENDER` (`male` maps to common German options such as `männlich`, `maennlich`, `m`, or `Herr`)
 
-For a second profile configured with `env_prefix: "APPLICANT_2"`, use the same field suffixes with that prefix, for example `APPLICANT_2_FIRST_NAME`, `APPLICANT_2_LAST_NAME`, `APPLICANT_2_EMAIL`, and `APPLICANT_2_DATE_OF_BIRTH`.
+For the active profile configured with `env_prefix: "APPLICANT"`, use the same field suffixes with that prefix, for example `APPLICANT_FIRST_NAME`, `APPLICANT_LAST_NAME`, `APPLICANT_EMAIL`, and `APPLICANT_DATE_OF_BIRTH`.
 
-`APPLICANT_EMAIL` is used for both the email and repeated-email fields. `APPLICANT_DATE_OF_BIRTH` can be entered as `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`; the script formats it for one combined date field or splits it into day, month, and year fields when the website shows separate inputs.
+For the active profile, `APPLICANT_EMAIL` is used for both the email and repeated-email fields. `APPLICANT_DATE_OF_BIRTH` can be entered as `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`; the script formats it for one combined date field or splits it into day, month, and year fields when the website shows separate inputs.
 
 Leave `APPLICANT_SECURITY_ANSWER` empty when a visible text security challenge must be entered manually. When the script reaches that field, it restores the visible browser window if it was minimized, brings the tab to the front, focuses the field, plays an alert sound immediately, and repeats the sound every 10 seconds until an answer is entered. If the bot was started from the phone control page, the same manual text challenge can also be answered from the phone.
 

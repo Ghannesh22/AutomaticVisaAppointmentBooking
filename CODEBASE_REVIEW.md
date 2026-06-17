@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-This project monitors the StaedteRegion Aachen appointment website with Playwright and books a configured visa appointment when a matching slot appears. The current config targets RWTH Studenten appointments at the RWTH Super C location for July and August 2026, with real booking enabled by `dry_run: false`.
+This project monitors the StaedteRegion Aachen appointment website with Playwright and books a configured visa appointment when a matching slot appears. The current config targets RWTH Studenten appointments at the RWTH Super C location for September and October 2026, with `dry_run: true` as the safe public default.
 
 ## Runtime Flow
 

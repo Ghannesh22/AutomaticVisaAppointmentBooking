@@ -40,24 +40,24 @@ class FieldMappingTests(unittest.TestCase):
 class ApplicantProfileEnvTests(unittest.TestCase):
     def test_profile_env_name_uses_configured_prefix(self):
         profile = ApplicantProfile(
-            name="sammed",
+            name="applicant_b",
             target_months=("2026-09", "2026-10"),
-            env_prefix="APPLICANT_2",
+            env_prefix="CUSTOM",
         )
 
         self.assertEqual(
             _profile_env_name("APPLICANT_FIRST_NAME", profile),
-            "APPLICANT_2_FIRST_NAME",
+            "CUSTOM_FIRST_NAME",
         )
 
     def test_env_value_reads_profile_prefixed_date_components(self):
         profile = ApplicantProfile(
-            name="sammed",
+            name="applicant_b",
             target_months=("2026-09", "2026-10"),
-            env_prefix="APPLICANT_2",
+            env_prefix="CUSTOM",
         )
 
-        with patch.dict(os.environ, {"APPLICANT_2_DATE_OF_BIRTH": "05-09-2001"}, clear=True):
+        with patch.dict(os.environ, {"CUSTOM_DATE_OF_BIRTH": "05-09-2001"}, clear=True):
             self.assertEqual(_env_value("APPLICANT_DATE_OF_BIRTH_DAY", profile), "05")
             self.assertEqual(_env_value("APPLICANT_DATE_OF_BIRTH_MONTH", profile), "09")
             self.assertEqual(_env_value("APPLICANT_DATE_OF_BIRTH_YEAR", profile), "2001")
