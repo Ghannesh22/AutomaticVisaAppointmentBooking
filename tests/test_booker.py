@@ -1,12 +1,65 @@
 import asyncio
 import logging
 import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
-from src.booker import SlotSelectionUnavailable, _click_appointment_time, _click_detected_time_element
+from src.booker import (
+    SlotSelectionUnavailable,
+    _click_appointment_time,
+    _click_detected_time_element,
+    _looks_like_booking_success,
+    _send_booking_success_telegram_alert,
+)
 from src.slot_checker import SlotCandidate
+
+
+class BookingSuccessDetectionTests(unittest.TestCase):
+    def test_detects_step_6_success_confirmation_text(self):
+        self.assertTrue(
+            _looks_like_booking_success(
+                "Schritt 6 von 6: Appointment successful. Email has been sent.",
+                "https://example.test/reserve",
+            )
+        )
+
+    def test_rejects_non_success_personal_data_page(self):
+        self.assertFalse(
+            _looks_like_booking_success(
+                "Schritt 5 von 6: Pflichtfeld Sicherheitsfrage",
+                "https://example.test/personaldata",
+            )
+        )
+
+
+class BookingSuccessTelegramAlertTests(unittest.TestCase):
+    def test_success_alert_is_forced_and_includes_confirmation_screenshot(self):
+        logger = Mock()
+        screenshot = Path("confirmations/booking_success_20260818_113900.png")
+
+        with patch("src.booker.send_telegram_alert", return_value=True) as send_alert:
+            _send_booking_success_telegram_alert(
+                appointment_date="2026-10-19",
+                appointment_time="10:00",
+                location="RWTH - Aussenstelle Super C",
+                profile_name="sammed",
+                reference="ABC-123",
+                screenshot=screenshot,
+                logger=logger,
+            )
+
+        send_alert.assert_called_once()
+        kwargs = send_alert.call_args.kwargs
+        self.assertEqual(kwargs["title"], "Appointment successful")
+        self.assertEqual(kwargs["severity"], "success")
+        self.assertEqual(kwargs["screenshot_path"], screenshot)
+        self.assertTrue(kwargs["force"])
+        self.assertIn("Appointment successful.", kwargs["message"])
+        self.assertIn("Reference: ABC-123", kwargs["message"])
+        logger.info.assert_called_once_with("Telegram booking-success alert sent")
 
 
 class VisibleTimeControlTests(unittest.TestCase):

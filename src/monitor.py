@@ -200,19 +200,11 @@ async def run_monitor(page: Page, config: AppConfig, logger: Logger) -> bool:
                             continue
                         if success:
                             stats.state = "booking_submitted"
-                            completed_profiles = _completed_profile_names(config)
-                            if len(completed_profiles) == len(config.applicant_profiles):
-                                return True
                             logger.info(
-                                "Booking completed for applicant profile '%s'; continuing monitor for remaining profiles: %s",
+                                "Booking completed for applicant profile '%s'; stopping monitor",
                                 applicant_profile.name,
-                                ", ".join(
-                                    profile.name
-                                    for profile in config.applicant_profiles
-                                    if profile.name not in completed_profiles
-                                ),
                             )
-                            break
+                            return True
                         stats.state = "dry_run_complete"
                         logger.info("Dry-run reached booking boundary; stopping monitor")
                         return False

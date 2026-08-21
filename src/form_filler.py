@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass
 from logging import Logger
 
-from playwright.async_api import Page
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from src.config_loader import ApplicantProfile, PROJECT_ROOT
 from src.security_state import (
@@ -208,6 +209,14 @@ FIELD_MAPPINGS = [
     ),
 ]
 
+PROFILE_SHARED_ENV_FALLBACKS = {
+    "APPLICANT_DATA_PROCESSING_CONSENT",
+    "APPLICANT_SAVE_PERSONAL_DATA_LOCALLY",
+}
+
+MANUAL_SECURITY_DIRECT_ENTRY_STABLE_SECONDS = 2.0
+MANUAL_SECURITY_DIRECT_ENTRY_MIN_LENGTH = 3
+
 DATE_OF_BIRTH_HINTS = (
     "geburtsdatum",
     "datum der geburt",
@@ -262,7 +271,7 @@ async def fill_personal_details(
             await _select_option(field, value)
         elif field_type in {"checkbox", "radio"}:
             if value.lower() in {"1", "true", "yes", "ja"}:
-                await field.check()
+                await _set_choice_checked(field)
         else:
             value = await _value_for_field(field, field_info.env_name, value, applicant_profile)
             await field.fill(value)
@@ -526,6 +535,9 @@ async def _wait_for_manual_security_answer(field, page: Page, logger: Logger, la
     await field.focus()
     deadline = time.monotonic() + 600
     next_alert_at = time.monotonic() + 10
+    last_direct_value = ""
+    last_direct_change_at = time.monotonic()
+    direct_min_length = await _manual_security_min_length(field)
     try:
         while time.monotonic() < deadline:
             submitted_answer = consume_security_answer(challenge_id)
@@ -536,8 +548,23 @@ async def _wait_for_manual_security_answer(field, page: Page, logger: Logger, la
 
             value = await field.evaluate("el => ('value' in el ? el.value : el.textContent || '').trim()")
             if value:
-                logger.info("Manual security answer entered; continuing booking flow")
-                return
+                now = time.monotonic()
+                if value != last_direct_value:
+                    last_direct_value = value
+                    last_direct_change_at = now
+                field_focused = await _field_has_focus(field)
+                if _manual_security_direct_entry_ready(
+                    value=value,
+                    field_focused=field_focused,
+                    last_change_at=last_direct_change_at,
+                    now=now,
+                    min_length=direct_min_length,
+                ):
+                    logger.info("Manual security answer entered; continuing booking flow")
+                    return
+            else:
+                last_direct_value = ""
+                last_direct_change_at = time.monotonic()
             if time.monotonic() >= next_alert_at:
                 _play_manual_security_alert()
                 next_alert_at = time.monotonic() + 10
@@ -545,6 +572,65 @@ async def _wait_for_manual_security_answer(field, page: Page, logger: Logger, la
         raise ValueError("Timed out waiting for manual security challenge entry")
     finally:
         clear_security_request(challenge_id)
+
+
+def _manual_security_direct_entry_ready(
+    *,
+    value: str,
+    field_focused: bool,
+    last_change_at: float,
+    now: float,
+    min_length: int,
+) -> bool:
+    if not value:
+        return False
+    return (
+        not field_focused
+        or (
+            now - last_change_at >= MANUAL_SECURITY_DIRECT_ENTRY_STABLE_SECONDS
+            and len(value) >= min_length
+        )
+    )
+
+
+async def _field_has_focus(field) -> bool:
+    try:
+        return await field.evaluate("el => document.activeElement === el")
+    except (PlaywrightTimeoutError, PlaywrightError):
+        return False
+
+
+async def _manual_security_min_length(field) -> int:
+    try:
+        constraints = await field.evaluate(
+            """el => ({
+                minLength: Number(el.getAttribute("minlength") || 0),
+                maxLength: Number(el.getAttribute("maxlength") || 0),
+            })"""
+        )
+    except (PlaywrightTimeoutError, PlaywrightError):
+        return MANUAL_SECURITY_DIRECT_ENTRY_MIN_LENGTH
+
+    min_length = int(constraints.get("minLength") or 0)
+    max_length = int(constraints.get("maxLength") or 0)
+    if max_length > 0:
+        return max_length
+    if min_length > 0:
+        return min_length
+    return MANUAL_SECURITY_DIRECT_ENTRY_MIN_LENGTH
+
+
+async def _set_choice_checked(field) -> None:
+    checked = await field.evaluate("el => !!el.checked")
+    if checked:
+        return
+    await field.evaluate(
+        """el => {
+            el.checked = true;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+        }"""
+    )
 
 
 async def _save_security_challenge_screenshot(field, logger: Logger):
@@ -729,7 +815,10 @@ def _env_value(env_name: str, applicant_profile: ApplicantProfile | None = None)
         if env_name == "APPLICANT_DATE_OF_BIRTH_MONTH":
             return f"{month:02d}"
         return f"{year:04d}"
-    return os.getenv(_profile_env_name(env_name, applicant_profile), "").strip()
+    value = os.getenv(_profile_env_name(env_name, applicant_profile), "").strip()
+    if value or applicant_profile is None or env_name not in PROFILE_SHARED_ENV_FALLBACKS:
+        return value
+    return os.getenv(env_name, "").strip()
 
 
 def _profile_env_name(env_name: str, applicant_profile: ApplicantProfile | None = None) -> str:

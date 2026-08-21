@@ -10,11 +10,11 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from src.config_loader import AppConfig, ApplicantProfile, PROJECT_ROOT
 from src.email_notifier import send_booking_email, smtp_enabled
 from src.form_filler import fill_personal_details
-from src.logger import safe_filename
 from src.manual_challenge import wait_for_manual_captcha_if_present
 from src.page_utils import click_locator_with_retry, wait_for_page_ready
 from src.slot_checker import SlotCandidate
 from src.state import has_success_flag, success_flag_path, write_success_flag
+from src.telegram_notifier import send_telegram_alert
 
 
 class SlotSelectionUnavailable(RuntimeError):
@@ -48,7 +48,21 @@ async def book_slot(
             f"Appointment time {slot.date_text} {slot.time_text} did not advance to the next step"
         ) from exc
     await wait_for_manual_captcha_if_present(page, logger, "before applicant details")
-    await fill_personal_details(page, logger, applicant_profile)
+    try:
+        await fill_personal_details(page, logger, applicant_profile)
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        if await _page_has_booking_success(page):
+            logger.warning(
+                "Step 5 interaction ended during navigation, but Step 6 success is visible; finalizing booking"
+            )
+            return await _finalize_successful_booking(
+                page,
+                config,
+                slot,
+                logger,
+                profile_name,
+            )
+        raise
     await wait_for_manual_captcha_if_present(page, logger, "after applicant details")
 
     if config.dry_run:
@@ -68,7 +82,17 @@ async def book_slot(
     await _click_final_submit(page, logger)
     await wait_for_page_ready(page, logger, "final booking submit", settle_ms=1500)
 
-    screenshot = safe_filename("booking_success")
+    return await _finalize_successful_booking(page, config, slot, logger, profile_name)
+
+
+async def _finalize_successful_booking(
+    page: Page,
+    config: AppConfig,
+    slot: SlotCandidate,
+    logger: Logger,
+    profile_name: str,
+) -> bool:
+    screenshot = _confirmation_artifact_path("booking_success", ".png")
     await page.screenshot(path=str(screenshot), full_page=True)
     confirmation_text = await page.locator("body").inner_text()
     confirmation_file = _write_confirmation(confirmation_text)
@@ -95,7 +119,54 @@ async def book_slot(
         logger.info("Sent Gmail SMTP booking notification")
     else:
         logger.info("SMTP settings are empty; skipping email notification")
+    _send_booking_success_telegram_alert(
+        appointment_date=slot.date_text,
+        appointment_time=slot.time_text,
+        location=config.appointment_location,
+        profile_name=profile_name,
+        reference=reference,
+        screenshot=screenshot,
+        logger=logger,
+    )
     return True
+
+
+def _send_booking_success_telegram_alert(
+    *,
+    appointment_date: str,
+    appointment_time: str,
+    location: str,
+    profile_name: str,
+    reference: str | None,
+    screenshot: Path,
+    logger: Logger,
+) -> None:
+    lines = [
+        "Appointment successful.",
+        "",
+        f"Appointment date: {appointment_date}",
+        f"Appointment time: {appointment_time}",
+        f"Location: {location}",
+        f"Applicant profile: {profile_name}",
+    ]
+    if reference:
+        lines.append(f"Reference: {reference}")
+    lines.extend(
+        [
+            "",
+            f"Confirmation screenshot: {screenshot}",
+            "",
+            "Check the official website email immediately in case it contains a confirmation link.",
+        ]
+    )
+    if send_telegram_alert(
+        title="Appointment successful",
+        message="\n".join(lines),
+        severity="success",
+        screenshot_path=screenshot,
+        force=True,
+    ):
+        logger.info("Telegram booking-success alert sent")
 
 
 async def _click_continue(page: Page, logger: Logger) -> None:
@@ -757,6 +828,53 @@ async def _click_final_submit(page: Page, logger: Logger) -> None:
         "#WeiterButton, input[value='Weiter']"
     ).first
     await click_locator_with_retry(button, page, logger, "final Book now/booking button", click_timeout_ms=10000)
+
+
+async def _page_has_booking_success(page: Page) -> bool:
+    try:
+        body_text = await page.locator("body").inner_text(timeout=3000)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        return False
+    return _looks_like_booking_success(body_text, page.url)
+
+
+def _looks_like_booking_success(text: str, url: str = "") -> bool:
+    import re
+    import unicodedata
+
+    without_marks = "".join(
+        char
+        for char in unicodedata.normalize("NFD", text.lower())
+        if unicodedata.category(char) != "Mn"
+    )
+    normalized = re.sub(r"[^a-z0-9]+", " ", without_marks).strip()
+    url = url.lower()
+    success_markers = (
+        "appointment successful",
+        "successfully",
+        "successful",
+        "termin erfolgreich",
+        "erfolgreich",
+        "bestaetigung",
+        "bestatigung",
+        "confirmation",
+    )
+    email_markers = ("email", "e mail", "mail")
+    has_success_text = any(marker in normalized for marker in success_markers)
+    has_email_text = any(marker in normalized for marker in email_markers)
+    return (
+        "schritt 6" in normalized
+        or ("reserve" in url and has_success_text)
+        or (has_success_text and has_email_text)
+    )
+
+
+def _confirmation_artifact_path(prefix: str, suffix: str) -> Path:
+    from datetime import datetime
+
+    directory = PROJECT_ROOT / "confirmations"
+    directory.mkdir(exist_ok=True)
+    return directory / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
 
 
 def _write_confirmation(text: str) -> Path:
